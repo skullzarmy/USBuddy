@@ -50,6 +50,12 @@ bad tech choices.
 | UI weight           | Can be richer                              | Must be tiny, no system deps               |
 | Distribution        | GitHub Releases, per-OS                    | Drops to USB; user double-clicks launcher  |
 
+Both programs follow a **CLI-first** internal structure: a Rust CLI binary
+does all real work (drive detection, formatting, catalog fetch, downloads,
+verification, install, launch, cleanup). The GUI (`egui`) and TUI (`ratatui`)
+are thin surfaces that shell into the CLI. Single source of truth, fully
+scriptable, automatable, and testable.
+
 ### Honest constraints baked into the design
 
 These are consequences of the stated requirements. Any stack must satisfy them.
@@ -90,7 +96,7 @@ These are consequences of the stated requirements. Any stack must satisfy them.
 | **Inference engine** | **`llama.cpp` (`llama-server`)**                                                                       | Most portable engine; broadest backend matrix (CPU / CUDA / Metal / Vulkan / ROCm); GGUF format; MIT-licensed; OpenAI-compatible HTTP API on localhost.    |
 | **Runtime wrapper**  | **Rust**                                                                                               | Memory-safe (this code touches the host); tiny static binaries; deterministic cleanup via `Drop`; first-class crypto; robust process/signal handling.      |
 | **Chat UI**          | **Static SPA, served by wrapper, opened in user's default browser in private mode** (+ CLI/TUI fallback) | No frontend runtime on USB; no WebView dep; talks directly to `llama-server`'s OpenAI-compatible API.                                                       |
-| **Installer UI**     | **Rust + `egui`** with **`ratatui` TUI** alternative as a first-class option                            | No system UI deps (no GTK / WebKit / Qt) — sidesteps the Wails-on-Linux problem. Shared crates with the wrapper. TUI is SSH-friendly, scriptable, auditable. |
+| **Installer surfaces** | **CLI (foundation) + `egui` GUI + `ratatui` TUI**, all calling the same Rust core                    | No system UI deps (no GTK / WebKit / Qt). CLI is the workhorse; GUI/TUI are thin presentation layers. Scriptable, dotfiles-friendly, SSH-friendly.          |
 
 ### Ruled out, with reasons
 
@@ -125,6 +131,27 @@ advisor** on top.
 - **No Sigstore / cosign infrastructure.** Repo authentication is sufficient
   for this distribution model. SHA256 per model entry is mandatory — that's
   integrity, not signing.
+
+### Catalog format
+
+- **Format:** JSON. Machine-generated, schema-validatable, diffable in PRs.
+- **Schema versioning:** `schema: "usbuddy.catalog/v1"` at the root. Installer
+  refuses unknown schema versions with a clear "upgrade USBuddy" error.
+- **Entry granularity:** **flat** — one entry per downloadable artifact.
+  Family relationships expressed via a `family_id` field
+  (`llama-3.1-8b-instruct-q4_k_m` and `llama-3.1-8b-instruct-q5_k_m` share
+  `family_id: "llama-3.1-8b-instruct"`). Picker groups by family in UI;
+  storage is flat.
+- **Prompt templates:** reference by name (`prompt_template: "chatml"`,
+  `"llama3"`, `"mistral"`) — llama-server already implements these. An
+  embedded override field exists for truly custom templates.
+- **Capabilities:** array of strings — `["chat", "function_calling",
+  "json_mode", "vision", "code", "long_context"]`. Picker can filter.
+- **Aliases:** `aliases: []` per entry, so renames don't break existing
+  installs' `catalog.local.json` references.
+- **Update channels:** single `stable` channel for v1. Multi-channel deferred
+  until there's a real use case.
+- Full schema lives in `docs/CATALOG-SPEC.md` (forthcoming).
 
 ### Three sources of models, one picker
 
@@ -170,8 +197,44 @@ is not used in the USBuddy product surface.
 
 Runs every launch, on every host. Doubles as a **footprint security control**:
 a model that doesn't fit in RAM will swap to disk, which is the #1 leak
-vector. The picker shows green / yellow / red fit per model against detected
-available RAM and refuses to load a model that would cause uncontrolled swap.
+vector.
+
+Bands, measured against **detected available RAM** (not total):
+
+| Band   | Rule                                                                              | Behavior                                                     |
+| ------ | --------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| Green  | model + KV cache + overhead fits with ≥ 20% margin; ≥ 3 GB host OS headroom left  | Loads silently.                                              |
+| Yellow | fits but margin < 20%, OR host headroom < 3 GB but ≥ 1 GB                          | One-time "may slow your computer" notice; loads.             |
+| Red    | doesn't fit, OR would leave host with < 1 GB headroom                              | **Refuses to load.** Suggests smaller quant or shorter context. |
+
+Refinements baked in:
+
+- **Context-length slider** in the picker with live RAM impact (KV cache grows
+  with context). User can reduce context to shift Yellow → Green.
+- **Idle unload, default-on, 5 min threshold.** After 5 min of no activity,
+  llama-server unloads the model from mlocked RAM. Reloads on next message
+  (~2–5 s). Toggleable in config. Default-on because idle mlocked weights
+  contradict the entire footprint pitch.
+
+Initial threshold numbers are best-guess from llama.cpp's published figures
+and will be empirically tuned on real hardware before v0.1.0 GA.
+
+### Mid-session model swap
+
+- **Architecture:** kill-and-restart. SIGTERM the running `llama-server`,
+  spawn a new one with the new model. Conversation state lives **in the
+  wrapper as messages** (not as tokenized state), so it's model-agnostic.
+- **On swap:** wrapper sends full message history as a normal OpenAI-compat
+  chat completion to the new model. llama-server's prompt caching makes
+  subsequent messages fast.
+- **UI:** "Switching to {model}..." with real progress; model load is the
+  bottleneck.
+- **Refuses swap if new model fails RAM-fit.** Suggests alternatives.
+- **Forced "start fresh conversation" on `instruct` ↔ `base` profile-boundary
+  swaps.** Base models don't speak chat format and derail. Same-profile
+  swaps carry history normally.
+- **No two-process hot swap.** Doubles RAM use and directly fights the
+  RAM-fit advisor.
 
 ---
 
@@ -180,10 +243,13 @@ available RAM and refuses to load a model that would cause uncontrolled swap.
 Three-tier model:
 
 1. **Managed (catalog downloads)** — USBuddy adheres to the letter and spirit
-   of upstream licenses. Shows the **actual license text** (not a summary).
-   Records acceptance as `(model_id, license_sha256, timestamp, host_at_accept)`.
-   Re-prompts if upstream license changes. A "Credits" screen in the chat UI
-   displays required attribution.
+   of upstream licenses. Per-model: a "View license" link expands the full
+   license text, and a single "I accept the license" checkbox sits next to
+   the model in the picker. Install button stays disabled until every
+   selected model's checkbox is ticked. Acceptance recorded as
+   `(model_id, license_sha256, timestamp, host_at_accept)`. Re-prompts if
+   upstream license changes. A "Credits" screen in the chat UI shows required
+   attribution.
 2. **Drop-in** — user's responsibility. Out of scope.
 3. **Opt-out** — auditable, plain-text config (`/.usbuddy/license-prefs.toml`)
    with `scope = "all" | "permissive_only" | "none"`. `permissive_only`
@@ -331,26 +397,33 @@ Cached with `Swatinem/rust-cache@v2`.
 ### Decided
 - Inference engine: **llama.cpp / `llama-server`**
 - Wrapper language: **Rust**
-- Installer UI: **Rust + `egui`**, with **`ratatui` TUI** alternative
+- Installer surfaces: **CLI is the foundation**; `egui` GUI and `ratatui` TUI
+  are thin shells over it
 - Chat UI: **static SPA in browser private mode**, with CLI/TUI fallback
 - Drive format: **exFAT**
 - Model layer: **in-repo catalog, forkable, three sources, SHA256 integrity**
+- Catalog format: **JSON, schema-versioned (`usbuddy.catalog/v1`), flat
+  entries with `family_id`, named prompt templates, `capabilities` array,
+  `aliases` for renames, single `stable` channel**
 - **Content profile taxonomy** replaces "uncensored" branding (capability
   fully preserved)
 - Gated models: **HF token primary + manual walkthrough + drop-in fallback**
 - License handling: **three-tier (managed / drop-in / opt-out)** with
-  auditable opt-out config
+  per-model checkbox + "View license" UX in the picker and auditable
+  opt-out config
+- RAM-fit advisor: **green / yellow / red bands** against detected available
+  RAM, **context-length slider** in picker, **idle unload default-on at 5
+  min** (toggleable)
+- Mid-session model swap: **kill-and-restart with message-level state
+  replay**; force "start fresh" on `instruct` ↔ `base` profile-boundary swaps
 - Code signing: **out of scope; documented unblock posture for macOS/Windows**
 - CI/CD: **`ci.yml` + `release.yml` (`workflow_dispatch`), matrix above, draft
   releases, SBOM + SLSA provenance, workflow auto-tags**
 
-### Still open
-- License acceptance UX details (per-model click-through vs. checkbox list at
-  install time).
-- Catalog schema v1 (`docs/CATALOG-SPEC.md`).
-- Exact RAM-fit thresholds (green / yellow / red %).
-- TUI installer parity scope (full parity vs. minimal subset).
-- Wrapper ↔ llama-server lifecycle for mid-session model swap.
+### Open (implementation work, not architecture)
+- Empirical tuning of RAM-fit threshold constants on real hardware
+- Authoring `docs/ARCHITECTURE.md`, `docs/CATALOG-SPEC.md`, `docs/FOOTPRINT.md`
+- Deferred workflows: `footprint.yml`, `catalog-validate.yml`, E2E install test
 
 ## License
 
