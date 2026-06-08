@@ -1,0 +1,18 @@
+USBuddy
+Copyright 2026 Joe Peterson / skullzarmy
+
+This product is licensed under the Apache License, Version 2.0 (the
+"License"); you may not use the files in this project except in compliance
+with the License. You may obtain a copy of the License in the LICENSE file
+at the root of this repository or at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+This product includes original software developed by Joe Peterson
+(skullzarmy) for the USBuddy project.
+
+USBuddy downloads third-party components (such as the inference engine and
+model weights) at runtime rather than bundling them. Those components are
+covered by their own respective licenses, granted directly to the end user
+by their upstream providers. See docs/VERIFICATION.md and the signed
+artifact manifest for provenance details.
