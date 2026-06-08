@@ -52,9 +52,9 @@ bad tech choices.
 
 Both programs follow a **CLI-first** internal structure: a Rust CLI binary
 does all real work (drive detection, formatting, catalog fetch, downloads,
-verification, install, launch, cleanup). The GUI (`egui`) and TUI (`ratatui`)
-are thin surfaces that shell into the CLI. Single source of truth, fully
-scriptable, automatable, and testable.
+verification, install, launch, cleanup, updates). The GUI (`egui`) and TUI
+(`ratatui`) are thin surfaces that shell into the CLI. Single source of
+truth, fully scriptable, automatable, and testable.
 
 ### Honest constraints baked into the design
 
@@ -85,7 +85,9 @@ These are consequences of the stated requirements. Any stack must satisfy them.
 7. **GPU is opportunistic, never assumed.** CPU is the always-works baseline.
    CUDA / Metal / Vulkan / ROCm are detected and used when available.
 8. **The drive can vanish at any moment.** No writes to the USB during a
-   session; state held in RAM only. Yank-resistance is a hard requirement.
+   session; state held in RAM only. Yank-resistance is a hard requirement —
+   extends to updates: every update operation must be atomic and survivable
+   mid-write.
 
 ---
 
@@ -151,6 +153,7 @@ advisor** on top.
   installs' `catalog.local.json` references.
 - **Update channels:** single `stable` channel for v1. Multi-channel deferred
   until there's a real use case.
+- **Advisories:** root-level `advisories: []` array — see [Updates](#updates).
 - Full schema lives in `docs/CATALOG-SPEC.md` (forthcoming).
 
 ### Three sources of models, one picker
@@ -287,27 +290,136 @@ see what's been agreed to on their behalf.
 
 ## USB drive layout
 
+USBuddy uses a **shadow-tree** layout: each installed runtime version lives in
+its own directory under `versions/`, and a single `current.json` pointer
+selects the active one. This makes every update atomic and every release
+trivially rollback-able. See [Updates](#updates) for the lifecycle.
+
 ```
 /USBuddy/
-├── launch-windows.exe          ← per-OS launcher
+├── current.json                ← {"active": "0.2.0", "previous": "0.1.0", "schema": 1}
+├── launch-windows.exe          ← thin launcher; reads current.json, execs active wrapper
 ├── launch-macos.command
 ├── launch-linux.sh
-├── bin/
-│   ├── windows-x64/            ← wrapper + llama-server variants
-│   ├── macos-arm64/llama-server
-│   ├── macos-x64/llama-server
-│   ├── macos/usbuddy-wrapper   ← universal2; picks arch at runtime
-│   └── linux-x64/
-├── ui/                         ← static SPA bundle
-├── models/                     ← GGUFs (catalog + drop-in)
+├── versions/
+│   ├── 0.1.0/
+│   │   ├── bin/
+│   │   │   ├── windows-x64/
+│   │   │   ├── macos-arm64/llama-server
+│   │   │   ├── macos-x64/llama-server
+│   │   │   ├── macos/usbuddy-wrapper   ← universal2; picks arch at runtime
+│   │   │   └── linux-x64/
+│   │   ├── ui/                 ← static SPA bundle pinned to this version
+│   │   └── version.json        ← {"version":"0.1.0","sha256":"…","released":"…"}
+│   └── 0.2.0/                  ← parallel tree for next version
+├── models/                     ← shared across versions; sha256-keyed filenames
 │   └── catalog.local.json      ← provenance for installed models
-├── catalog.json                ← snapshot at install time
-├── .usbuddy/
+├── catalog.json                ← shared snapshot; refreshable independently of runtime
+├── .usbuddy/                   ← shared user data; survives runtime upgrades
 │   ├── trust/                  ← repo trust info
 │   ├── license-prefs.toml      ← visible audit trail
-│   └── version.json
+│   ├── hf-token                ← if user configured HF auth (clear docs on posture)
+│   └── advisories-seen.json    ← dismissed advisories
 └── README.txt                  ← plain-text user-facing note
 ```
+
+What's **shared** vs. **versioned**:
+- **Versioned** (lives under `versions/{ver}/`): wrapper binary, llama-server
+  binaries, static SPA bundle, anything that's tested as a unit.
+- **Shared** (lives at drive root): models (huge, version-independent),
+  catalog snapshot, user data, launchers (rarely change; bootstrap shims
+  that read `current.json`).
+
+---
+
+## Updates
+
+Updates are a first-class concern. Seven distinct vectors, each handled
+intentionally:
+
+| #  | What                              | Frequency   | Mechanism                                                     |
+| -- | --------------------------------- | ----------- | ------------------------------------------------------------- |
+| 1  | Installer binary                  | Rare        | Re-download from GitHub Releases.                             |
+| 2  | USBuddy runtime (wrapper + SPA)   | Occasional  | Shadow-tree install of new version under `versions/{new}/`.   |
+| 3  | `llama-server` binaries           | Bundled     | Pinned to runtime version. **Not independently updatable.**   |
+| 4  | Catalog snapshot                  | Frequent    | Refresh-on-demand; independent of runtime version.            |
+| 5  | Model weights                     | User-driven | Never auto-touched. User adds/removes via picker.             |
+| 6  | License re-acceptance             | Rare        | Detected at runtime when stored `license_sha256` diverges; re-prompts. |
+| 7  | Security advisories               | Hopefully never | Catalog `advisories[]` array; surfaced at launch.         |
+
+### Cross-cutting principles
+
+1. **User-initiated. Always.** No background checks, no auto-updates. Updates
+   require an explicit action: running the installer, clicking "Check for
+   updates" in the runtime (default-off), or invoking the CLI.
+2. **Yank-safe.** Every update is atomic. Mid-update yank leaves the previous
+   version active and launchable.
+3. **Frozen-version respect.** A drive that never reconnects keeps working
+   forever. No "out of date" nagging in the runtime.
+4. **Rollback is one click.** N-1 stays on the drive by default.
+5. **Never auto-modify user data.** Models, license prefs, and HF token
+   survive every runtime update untouched.
+6. **No offline phone-home.** Update checks only happen when the user asks.
+
+### Update process (runtime)
+
+1. Fetch latest release manifest from GitHub Releases API.
+2. If newer than `current.active`, show changelog, ask user to proceed.
+3. Download new version to `/USBuddy/versions/{new}.tmp/`; verify SHA256
+   against release manifest.
+4. Atomic rename `{new}.tmp/` → `{new}/`.
+5. Atomic write of new `current.json` with `active: {new}, previous: {old}`.
+6. (Optional) garbage-collect `versions/{N-2}/`. Default: keep last 2.
+
+Interruption before step 4: partial tmp dir; cleaned up on next install.
+Interruption between 4 and 5: new tree present but inactive; next install
+detects and offers to activate or discard. Interruption after 5: new version
+is live.
+
+### Rollback
+
+Swap `active` and `previous` in `current.json`. Single atomic file write.
+Available from installer's "Manage existing install" mode, runtime settings,
+and CLI (`usbuddy update --rollback`).
+
+### Three update entry points, one core
+
+1. **Installer's "Manage existing install" mode.** Detects existing drive →
+   offers Upgrade / Reinstall / Add/remove models / Rollback. The primary
+   update path.
+2. **Runtime "Check for updates" button** in chat UI settings. Default
+   **off**; user enables explicitly. One HTTPS call, shows changelog, stages
+   on the drive, applies on next launch.
+3. **CLI:** `usbuddy update --drive /path/to/USBuddy [--to VERSION|latest]
+   [--rollback] [--gc]`. Scriptable. Same Rust core as the other two.
+
+### Catalog updates
+
+- Independent of runtime updates. USBuddy 0.1.0 can run with the latest
+  catalog; USBuddy 0.5.0 can run with a 6-month-old catalog.
+- Catalog `schema` version pins the compatible runtime range. Schema
+  mismatch = clear error suggesting runtime upgrade. No silent breakage.
+- Refresh from runtime settings or CLI (`usbuddy catalog refresh`).
+
+### Advisories
+
+- New root-level `advisories: []` array in `catalog.json`.
+- Each entry: `id`, `severity`, `affects` (model IDs, runtime versions, or
+  llama-server CVE refs), `summary`, `recommended_action`.
+- Runtime surfaces relevant advisories at launch (filtered against installed
+  models / current runtime version), with "dismiss" persisted to
+  `.usbuddy/advisories-seen.json`.
+- **Informational only.** USBuddy never deletes models or downgrades runtimes
+  based on advisories — user always acts.
+
+### Why llama-server is bundled, not independently updatable
+
+- llama.cpp's GGUF format and runtime API evolve. A newer `llama-server` may
+  not be wire-compatible with an older wrapper.
+- Test matrix would explode. We ship and test "USBuddy {ver} with the
+  llama-server we shipped" — one combination per release.
+- Stable-distro posture. If a critical llama.cpp CVE drops, we cut a USBuddy
+  patch release. Same trust path, same mechanism.
 
 ---
 
@@ -401,10 +513,12 @@ Cached with `Swatinem/rust-cache@v2`.
   are thin shells over it
 - Chat UI: **static SPA in browser private mode**, with CLI/TUI fallback
 - Drive format: **exFAT**
+- USB layout: **shadow-tree** with `current.json` pointer; `versions/{ver}/`
+  per release; models/catalog/user-data shared at drive root
 - Model layer: **in-repo catalog, forkable, three sources, SHA256 integrity**
 - Catalog format: **JSON, schema-versioned (`usbuddy.catalog/v1`), flat
   entries with `family_id`, named prompt templates, `capabilities` array,
-  `aliases` for renames, single `stable` channel**
+  `aliases` for renames, single `stable` channel, `advisories[]` array**
 - **Content profile taxonomy** replaces "uncensored" branding (capability
   fully preserved)
 - Gated models: **HF token primary + manual walkthrough + drop-in fallback**
@@ -416,6 +530,10 @@ Cached with `Swatinem/rust-cache@v2`.
   min** (toggleable)
 - Mid-session model swap: **kill-and-restart with message-level state
   replay**; force "start fresh" on `instruct` ↔ `base` profile-boundary swaps
+- **Updates:** user-initiated only, never automatic; atomic shadow-tree
+  install; one-click rollback to N-1; llama-server pinned to runtime;
+  catalog refreshable independently; advisories informational only; no
+  "out of date" nagging
 - Code signing: **out of scope; documented unblock posture for macOS/Windows**
 - CI/CD: **`ci.yml` + `release.yml` (`workflow_dispatch`), matrix above, draft
   releases, SBOM + SLSA provenance, workflow auto-tags**
