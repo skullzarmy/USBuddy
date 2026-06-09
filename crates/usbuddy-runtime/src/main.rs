@@ -21,6 +21,7 @@ use axum::{
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
+use tokio::sync::Notify;
 use usbuddy_core::{
     catalog::{Advisory, Catalog, ModelEntry, load_catalog},
     compiled_version,
@@ -41,6 +42,19 @@ const STYLES_CSS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../ui/web/src/styles.css"
 ));
+const MARKDOWN_JS: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../ui/web/src/markdown.js"
+));
+/// Embedded JPG icon, decoded at runtime into RGBA for both the tray and
+/// the in-browser favicon-ish PNG endpoint. Cross-platform: same bytes are
+/// used on macOS, Linux, and Windows.
+const ICON_JPG: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/usbuddy-icon.jpg"
+));
+
+mod tray;
 
 /// Port used internally by llama-server; separate from the runtime's own port.
 const LLAMA_SERVER_PORT: u16 = 8766;
@@ -95,6 +109,10 @@ struct RuntimeState {
     /// alive (model launch or chat proxy hit). Read by the idle-watcher.
     last_activity: Arc<AtomicU64>,
     idle_timeout_secs: u64,
+    /// Notified by `/api/shutdown` (and other shutdown paths) to ask the
+    /// HTTP server to exit cleanly. Lets the chat UI quit the runtime
+    /// without any external supervisor.
+    shutdown: Arc<Notify>,
 }
 
 fn now_epoch_secs() -> u64 {
@@ -114,8 +132,7 @@ fn touch_activity(state: &RuntimeState) {
 // Main
 // ---------------------------------------------------------------------------
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         RuntimeCommand::Inspect { drive } => {
@@ -124,80 +141,126 @@ async fn main() -> anyhow::Result<()> {
                 "{}",
                 serde_json::to_string_pretty(&status_payload(&state, "Inspection only"))?
             );
+            Ok(())
         }
         RuntimeCommand::Serve {
             drive,
             port,
             open_browser,
             idle_timeout_secs,
-        } => {
-            let state = Arc::new(load_state(drive, idle_timeout_secs)?);
-
-            // Kill llama-server on Ctrl-C.
-            let cleanup_state = state.clone();
-            tokio::spawn(async move {
-                let _ = tokio::signal::ctrl_c().await;
-                kill_llama_server(&cleanup_state.llama_process);
-                std::process::exit(0);
-            });
-
-            // Idle-unload watcher: if llama-server is running and there's been
-            // no activity for `idle_timeout_secs`, stop it. The footprint
-            // requirement says mlocked weights at idle contradict the pitch.
-            if idle_timeout_secs > 0 {
-                let watch_state = state.clone();
-                tokio::spawn(async move {
-                    let mut ticker =
-                        tokio::time::interval(Duration::from_secs(IDLE_CHECK_INTERVAL_SECS));
-                    // First tick fires immediately; skip it so we don't insta-kill.
-                    ticker.tick().await;
-                    loop {
-                        ticker.tick().await;
-                        let running = watch_state
-                            .llama_process
-                            .lock()
-                            .map(|g| g.is_some())
-                            .unwrap_or(false);
-                        if !running {
-                            continue;
-                        }
-                        let last = watch_state.last_activity.load(Ordering::Relaxed);
-                        let now = now_epoch_secs();
-                        if now.saturating_sub(last) >= watch_state.idle_timeout_secs {
-                            eprintln!(
-                                "USBuddy: stopping llama-server after {}s idle (footprint policy)",
-                                watch_state.idle_timeout_secs
-                            );
-                            kill_llama_server(&watch_state.llama_process);
-                        }
-                    }
-                });
-            }
-
-            let app = Router::new()
-                .route("/", get(index))
-                .route("/assets/app.js", get(app_js))
-                .route("/assets/styles.css", get(styles_css))
-                .route("/api/status", get(api_status))
-                .route("/api/launch", post(api_launch))
-                .route("/api/stop", post(api_stop))
-                .route("/api/chat", axum::routing::any(api_chat_proxy))
-                .route("/api/chat/{*rest}", axum::routing::any(api_chat_proxy))
-                .with_state(state.clone());
-
-            let addr = SocketAddr::from(([127, 0, 0, 1], port));
-            let listener = TcpListener::bind(addr).await?;
-            let url = format!("http://{addr}");
-            eprintln!("USBuddy runtime serving on {url}");
-            if open_browser {
-                let _ = open_browser_best_effort(&url);
-            }
-            axum::serve(listener, app)
-                .await
-                .context("runtime HTTP server exited unexpectedly")?;
-        }
+        } => run_serve(drive, port, open_browser, idle_timeout_secs),
     }
-    Ok(())
+}
+
+fn run_serve(
+    drive: PathBuf,
+    port: u16,
+    open_browser: bool,
+    idle_timeout_secs: u64,
+) -> anyhow::Result<()> {
+    let state = Arc::new(load_state(drive, idle_timeout_secs)?);
+    let url = format!("http://127.0.0.1:{port}");
+
+    // HTTP server runs on a background tokio runtime so the OS main thread
+    // is free for the tray-icon event loop (required by macOS Cocoa).
+    let server_state = state.clone();
+    let _server_thread = std::thread::Builder::new()
+        .name("usbuddy-http".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("[fatal] failed to build tokio runtime: {e}");
+                    std::process::exit(1);
+                }
+            };
+            if let Err(e) = rt.block_on(serve_http(server_state, port, idle_timeout_secs)) {
+                eprintln!("[fatal] HTTP server exited with error: {e}");
+            }
+        })?;
+
+    eprintln!("USBuddy runtime serving on {url}");
+    if open_browser {
+        let _ = open_browser_best_effort(&url);
+    }
+
+    // Tray event loop on the main thread. Returns / diverges only when
+    // the user clicks Quit, at which point we signal shutdown and exit.
+    crate::tray::run_tray(state, url)
+}
+
+async fn serve_http(
+    state: Arc<RuntimeState>,
+    port: u16,
+    idle_timeout_secs: u64,
+) -> anyhow::Result<()> {
+    // Kill llama-server on Ctrl-C and trigger graceful shutdown.
+    let cleanup_state = state.clone();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        kill_llama_server(&cleanup_state.llama_process);
+        cleanup_state.shutdown.notify_waiters();
+    });
+
+    // Idle-unload watcher: if llama-server is running and there's been
+    // no activity for `idle_timeout_secs`, stop it.
+    if idle_timeout_secs > 0 {
+        let watch_state = state.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(IDLE_CHECK_INTERVAL_SECS));
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let running = watch_state
+                    .llama_process
+                    .lock()
+                    .map(|g| g.is_some())
+                    .unwrap_or(false);
+                if !running {
+                    continue;
+                }
+                let last = watch_state.last_activity.load(Ordering::Relaxed);
+                let now = now_epoch_secs();
+                if now.saturating_sub(last) >= watch_state.idle_timeout_secs {
+                    eprintln!(
+                        "USBuddy: stopping llama-server after {}s idle (footprint policy)",
+                        watch_state.idle_timeout_secs
+                    );
+                    kill_llama_server(&watch_state.llama_process);
+                }
+            }
+        });
+    }
+
+    let app = Router::new()
+        .route("/", get(index))
+        .route("/assets/app.js", get(app_js))
+        .route("/assets/markdown.js", get(markdown_js))
+        .route("/assets/styles.css", get(styles_css))
+        .route("/assets/icon.png", get(icon_png))
+        .route("/api/status", get(api_status))
+        .route("/api/launch", post(api_launch))
+        .route("/api/stop", post(api_stop))
+        .route("/api/shutdown", post(api_shutdown))
+        .route("/api/chat", axum::routing::any(api_chat_proxy))
+        .route("/api/chat/{*rest}", axum::routing::any(api_chat_proxy))
+        .with_state(state.clone());
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let listener = TcpListener::bind(addr).await?;
+
+    let shutdown_signal = state.shutdown.clone();
+    let kill_on_exit = state.llama_process.clone();
+    let serve_result = axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown_signal.notified().await;
+        })
+        .await;
+    kill_llama_server(&kill_on_exit);
+    serve_result.context("runtime HTTP server exited unexpectedly")
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +280,7 @@ fn load_state(drive: PathBuf, idle_timeout_secs: u64) -> anyhow::Result<RuntimeS
         llama_process: Arc::new(Mutex::new(None)),
         last_activity: Arc::new(AtomicU64::new(now_epoch_secs())),
         idle_timeout_secs,
+        shutdown: Arc::new(Notify::new()),
     })
 }
 
@@ -287,10 +351,27 @@ async fn app_js() -> impl IntoResponse {
     )
 }
 
+async fn markdown_js() -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        MARKDOWN_JS,
+    )
+}
+
 async fn styles_css() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
         STYLES_CSS,
+    )
+}
+
+async fn icon_png() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/jpeg")],
+        axum::body::Bytes::from_static(ICON_JPG),
     )
 }
 
@@ -378,6 +459,20 @@ async fn api_stop(State(state): State<Arc<RuntimeState>>) -> Json<serde_json::Va
     Json(serde_json::json!({ "stopped": true }))
 }
 
+/// Initiates a clean shutdown of the whole runtime (kills llama-server,
+/// signals the axum graceful-shutdown future, then exits the process so
+/// the tray thread also unwinds). Called from the web UI Quit button or
+/// from external tooling.
+async fn api_shutdown(State(state): State<Arc<RuntimeState>>) -> Json<serde_json::Value> {
+    kill_llama_server(&state.llama_process);
+    state.shutdown.notify_waiters();
+    tokio::spawn(async {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        std::process::exit(0);
+    });
+    Json(serde_json::json!({ "shutting_down": true }))
+}
+
 /// Transparent reverse-proxy: `/api/chat/**` → llama-server `/v1/chat/**`.
 async fn api_chat_proxy(
     State(state): State<Arc<RuntimeState>>,
@@ -417,12 +512,11 @@ async fn api_chat_proxy(
     for (name, value) in upstream_resp.headers() {
         resp_headers.insert(name, value.clone());
     }
-    let bytes = upstream_resp
-        .bytes()
-        .await
-        .map_err(|e| AppError::bad_gateway(format!("error reading llama-server response: {e}")))?;
-
-    let mut response = Response::new(Body::from(bytes));
+    // Stream the response body through instead of buffering it. This is what
+    // makes server-sent-events / token-by-token streaming work end-to-end.
+    let stream = upstream_resp.bytes_stream();
+    let body = Body::from_stream(stream);
+    let mut response = Response::new(body);
     *response.status_mut() = status;
     *response.headers_mut() = resp_headers;
     Ok(response)

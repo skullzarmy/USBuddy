@@ -10,8 +10,11 @@ repository.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 clap.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tao = "0.30"
 tokio.workspace = true
+tray-icon = "0.19"
 usbuddy-core = { path = "../usbuddy-core" }
