@@ -4,6 +4,10 @@
 # crate that the runtime depends on, so we install them as pre-build steps.
 
 [target.aarch64-unknown-linux-gnu]
+# Default cross 0.2.5 image is Ubuntu 16.04 (xenial), which doesn't carry
+# libayatana-appindicator3-dev. The `:edge` tag is built on Ubuntu 20.04
+# where the package is available.
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:edge"
 pre-build = [
     "dpkg --add-architecture $CROSS_DEB_ARCH",
     "apt-get update && apt-get install --assume-yes --no-install-recommends libssl-dev:$CROSS_DEB_ARCH libgtk-3-dev:$CROSS_DEB_ARCH libxdo-dev:$CROSS_DEB_ARCH libayatana-appindicator3-dev:$CROSS_DEB_ARCH pkg-config",
