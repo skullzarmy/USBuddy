@@ -1353,14 +1353,35 @@ fn format_path(p: &Path) -> String {
     p.display().to_string()
 }
 
+/// Embedded mascot icon — reused as the window icon. Shared with the
+/// runtime's tray/web assets so we only ship one canonical artwork.
+const APP_ICON_PNG: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../usbuddy-runtime/assets/usbuddy-icon.png"
+));
+
+fn load_window_icon() -> Option<egui::IconData> {
+    let img = image::load_from_memory(APP_ICON_PNG).ok()?.into_rgba8();
+    let (width, height) = img.dimensions();
+    Some(egui::IconData {
+        rgba: img.into_raw(),
+        width,
+        height,
+    })
+}
+
 fn main() -> eframe::Result<()> {
     let cli = Cli::parse();
     let app = App::new(cli.drive);
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1100.0, 760.0])
+        .with_min_inner_size([800.0, 500.0])
+        .with_title("USBuddy installer");
+    if let Some(icon) = load_window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1100.0, 760.0])
-            .with_min_inner_size([800.0, 500.0])
-            .with_title("USBuddy installer"),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(

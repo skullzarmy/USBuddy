@@ -10,7 +10,7 @@ repository.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 clap.workspace = true
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

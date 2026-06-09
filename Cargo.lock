@@ -2520,8 +2520,6 @@ dependencies = [
  "num-traits",
  "png 0.18.1",
  "tiff",
- "zune-core",
- "zune-jpeg",
 ]
 
 [[package]]
@@ -5564,6 +5562,7 @@ dependencies = [
  "clap",
  "eframe",
  "egui",
+ "image",
  "rfd",
  "semver",
  "serde",

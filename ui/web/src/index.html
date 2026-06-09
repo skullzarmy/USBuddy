@@ -4,13 +4,18 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>USBuddy</title>
+    <link rel="icon" type="image/png" href="/assets/icon.png">
     <link rel="stylesheet" href="/assets/styles.css">
   </head>
   <body>
     <div class="app">
       <aside class="sidebar" id="sidebar">
         <div class="sidebar-head">
-          <h1>USBuddy</h1>
+          <img src="/assets/icon.png" alt="" class="brand-icon">
+          <div class="brand">
+            <h1>USBuddy</h1>
+            <span class="brand-sub">portable · offline · yours</span>
+          </div>
           <button id="sidebar-toggle" class="icon-btn" title="Hide sidebar" aria-label="Hide sidebar">‹</button>
         </div>
 
@@ -46,6 +51,7 @@
           <div class="mono small" id="ram-info">—</div>
           <div class="mono small" id="platform">—</div>
           <div class="mono small">v<span id="version">—</span></div>
+          <button id="quit-btn" class="btn btn-ghost btn-quit" title="Stop the USBuddy runtime entirely">⏻ Quit USBuddy</button>
         </div>
       </aside>
 
@@ -60,7 +66,8 @@
 
         <div id="chat-messages" class="chat-messages">
           <div class="empty-state" id="empty-state">
-            <h2>Ready when you are.</h2>
+            <img src="/assets/icon.png" alt="" class="empty-mascot">
+            <h2>Hi, I'm USBuddy.</h2>
             <p id="empty-hint">Pick a model in the sidebar and click <strong>Launch model</strong>.</p>
           </div>
         </div>

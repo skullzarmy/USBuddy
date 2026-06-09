@@ -19,7 +19,7 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 
-use crate::{ICON_JPG, RuntimeState, kill_llama_server, open_browser_best_effort};
+use crate::{ICON_PNG, RuntimeState, kill_llama_server, open_browser_best_effort};
 
 /// Per-event-loop user event so we can wake the loop on menu clicks.
 enum UserEvent {
@@ -99,8 +99,8 @@ pub fn run_tray(state: Arc<RuntimeState>, url: String) -> Result<()> {
 }
 
 fn decode_icon() -> Result<Icon> {
-    let img = image::load_from_memory(ICON_JPG)
-        .context("decode embedded usbuddy-icon.jpg")?
+    let img = image::load_from_memory(ICON_PNG)
+        .context("decode embedded usbuddy-icon.png")?
         .into_rgba8();
     let (w, h) = img.dimensions();
     Icon::from_rgba(img.into_raw(), w, h).context("build tray Icon from RGBA")

@@ -49,9 +49,9 @@ const MARKDOWN_JS: &str = include_str!(concat!(
 /// Embedded JPG icon, decoded at runtime into RGBA for both the tray and
 /// the in-browser favicon-ish PNG endpoint. Cross-platform: same bytes are
 /// used on macOS, Linux, and Windows.
-const ICON_JPG: &[u8] = include_bytes!(concat!(
+const ICON_PNG: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/assets/usbuddy-icon.jpg"
+    "/assets/usbuddy-icon.png"
 ));
 
 mod tray;
@@ -370,8 +370,8 @@ async fn styles_css() -> impl IntoResponse {
 
 async fn icon_png() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "image/jpeg")],
-        axum::body::Bytes::from_static(ICON_JPG),
+        [(header::CONTENT_TYPE, "image/png")],
+        axum::body::Bytes::from_static(ICON_PNG),
     )
 }
 

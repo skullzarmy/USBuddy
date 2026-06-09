@@ -43,6 +43,7 @@ const sendBtn = $('send-btn');
 const stopGenBtn = $('stop-gen-btn');
 const statusLine = $('status-line');
 const newChatBtn = $('new-chat');
+const quitBtn = $('quit-btn');
 
 // ---------------------------------------------------------------------------
 // Boot
@@ -342,6 +343,22 @@ function appendMessage(role, content) {
 
 stopGenBtn.addEventListener('click', () => {
   if (inflight) inflight.abort();
+});
+
+quitBtn.addEventListener('click', async () => {
+  if (!confirm('Quit USBuddy? This stops the runtime entirely.')) return;
+  quitBtn.disabled = true;
+  quitBtn.textContent = 'Shutting down…';
+  if (inflight) inflight.abort();
+  try {
+    await fetch('/api/shutdown', { method: 'POST' });
+  } catch {
+    /* expected — connection will drop */
+  }
+  document.body.innerHTML =
+    '<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:16px;font-family:system-ui;color:#9aa0a6;background:#0f1115;">' +
+    '<img src="/assets/icon.png" style="width:120px;opacity:.6">' +
+    '<div>USBuddy stopped. You can close this tab.</div></div>';
 });
 
 function setStreaming(streaming) {
