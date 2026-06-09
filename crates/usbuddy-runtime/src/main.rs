@@ -114,8 +114,8 @@ async fn main() -> anyhow::Result<()> {
                 .route("/api/status", get(api_status))
                 .route("/api/launch", post(api_launch))
                 .route("/api/stop", post(api_stop))
-                .route("/api/chat", post(api_chat_proxy))
-                .route("/api/chat/{*rest}", post(api_chat_proxy))
+                .route("/api/chat", axum::routing::any(api_chat_proxy))
+                .route("/api/chat/{*rest}", axum::routing::any(api_chat_proxy))
                 .with_state(state.clone());
 
             let addr = SocketAddr::from(([127, 0, 0, 1], port));
