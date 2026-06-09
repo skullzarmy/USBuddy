@@ -53,10 +53,11 @@ pub fn download_verified(url: &str, dest: &Path, expected_sha256: Option<&str>) 
             expected: expected.to_string(),
             actual: digest,
         });
+    if dest.exists() {
+        fs::remove_file(dest)?;
     }
 
     tmp.persist(dest)
         .map_err(|e| UsbBuddyError::Io(std::io::Error::other(e.to_string())))?;
-
     Ok(digest)
 }
