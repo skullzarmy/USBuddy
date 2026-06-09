@@ -263,9 +263,9 @@ async fn api_launch(
     );
     if decision.band == FitBand::Red {
         return Err(AppError::bad_request(format!(
-            "RAM check failed (red band): model requires {} bytes but only {} available. \
+            "RAM check failed (red band): model requires {} bytes but only {} bytes available. \
              Reduce model size or shorten context length.",
-            decision.required_bytes, decision.host_headroom_bytes
+            decision.required_bytes, memory.available_bytes
         )));
     }
 
