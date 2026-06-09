@@ -98,3 +98,48 @@ capabilities = ["chat"]
 aliases = ["dolphin-llama31-8b-q4"]
 profile = "minimally-aligned"
 license = { spdx = "LicenseRef-Llama-Community", title = "Llama Community License", url = "https://ai.meta.com/llama/license/", requires_attribution = true }
+
+# ---------------------------------------------------------------------
+# Uncensored (abliterated — refusal direction mathematically suppressed).
+# Inspired by the source project that USBuddy forks from. The picker
+# shows a one-time confirmation before any uncensored model is selected.
+# ---------------------------------------------------------------------
+
+[[models]]
+id = "gemma-2-2b-it-abliterated-q4_k_m"
+family_id = "gemma-2-2b-it-abliterated"
+display_name = "Gemma 2 2B Instruct (abliterated) Q4_K_M"
+version = "1"
+hf_repo = "bartowski/gemma-2-2b-it-abliterated-GGUF"
+hf_path = "gemma-2-2b-it-abliterated-Q4_K_M.gguf"
+prompt_template = "gemma"
+capabilities = ["chat"]
+aliases = ["gemma2-2b-abliterated-q4"]
+profile = "uncensored"
+license = { spdx = "LicenseRef-Gemma", title = "Gemma Terms of Use", url = "https://ai.google.dev/gemma/terms", requires_attribution = true }
+
+[[models]]
+id = "qwen2.5-7b-instruct-abliterated-v2-q4_k_m"
+family_id = "qwen2.5-7b-instruct-abliterated"
+display_name = "Qwen 2.5 7B Instruct (abliterated v2) Q4_K_M"
+version = "1"
+hf_repo = "QuantFactory/Qwen2.5-7B-Instruct-abliterated-v2-GGUF"
+hf_path = "Qwen2.5-7B-Instruct-abliterated-v2.Q4_K_M.gguf"
+prompt_template = "chatml"
+capabilities = ["chat"]
+aliases = ["qwen25-7b-abliterated-q4"]
+profile = "uncensored"
+license = { spdx = "Apache-2.0", title = "Apache License 2.0", url = "https://www.apache.org/licenses/LICENSE-2.0.txt", requires_attribution = false }
+
+[[models]]
+id = "qwen2.5-coder-7b-instruct-abliterated-q4_k_m"
+family_id = "qwen2.5-coder-7b-instruct-abliterated"
+display_name = "Qwen 2.5 Coder 7B Instruct (abliterated) Q4_K_M"
+version = "1"
+hf_repo = "bartowski/Qwen2.5-Coder-7B-Instruct-abliterated-GGUF"
+hf_path = "Qwen2.5-Coder-7B-Instruct-abliterated-Q4_K_M.gguf"
+prompt_template = "chatml"
+capabilities = ["chat", "code"]
+aliases = ["qwen25-coder-7b-abliterated-q4"]
+profile = "uncensored"
+license = { spdx = "Apache-2.0", title = "Apache License 2.0", url = "https://www.apache.org/licenses/LICENSE-2.0.txt", requires_attribution = false }

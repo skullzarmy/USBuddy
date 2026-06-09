@@ -1,6 +1,6 @@
 {
   "schema": "usbuddy.catalog/v1",
-  "generated_at": "2026-06-09T04:36:05Z",
+  "generated_at": "2026-06-09T05:17:52Z",
   "source": "repository",
   "runtime": {
     "min": "0.1.0",
@@ -89,7 +89,7 @@
         "spdx": "LicenseRef-Llama-Community",
         "title": "Llama Community License",
         "url": "https://ai.meta.com/llama/license/",
-        "sha256": "52779c01ea7524aaea8e10a12b736fd67e7c0ee6175bcedd931b5d48cfdb7afb",
+        "sha256": "5a0970fdec297b47f5cd985af0c572fd2891a4de1c733f9615383ff0625a0df0",
         "requires_attribution": true
       },
       "source": {
@@ -151,12 +151,97 @@
         "spdx": "LicenseRef-Llama-Community",
         "title": "Llama Community License",
         "url": "https://ai.meta.com/llama/license/",
-        "sha256": "52779c01ea7524aaea8e10a12b736fd67e7c0ee6175bcedd931b5d48cfdb7afb",
+        "sha256": "5a0970fdec297b47f5cd985af0c572fd2891a4de1c733f9615383ff0625a0df0",
         "requires_attribution": true
       },
       "source": {
         "kind": "official",
         "url": "https://huggingface.co/bartowski/dolphin-2.9.4-llama3.1-8b-GGUF/resolve/main/dolphin-2.9.4-llama3.1-8b-Q4_K_M.gguf"
+      }
+    },
+    {
+      "id": "gemma-2-2b-it-abliterated-q4_k_m",
+      "family_id": "gemma-2-2b-it-abliterated",
+      "display_name": "Gemma 2 2B Instruct (abliterated) Q4_K_M",
+      "version": "1",
+      "file_name": "gemma-2-2b-it-abliterated-Q4_K_M.gguf",
+      "sha256": "5f0264dd8197b8f96b6f363461cc9d5b7ad49284d2849c68942f43109a1252c4",
+      "size_bytes": 1708582784,
+      "prompt_template": "gemma",
+      "capabilities": [
+        "chat"
+      ],
+      "aliases": [
+        "gemma2-2b-abliterated-q4"
+      ],
+      "profile": "uncensored",
+      "license": {
+        "spdx": "LicenseRef-Gemma",
+        "title": "Gemma Terms of Use",
+        "url": "https://ai.google.dev/gemma/terms",
+        "sha256": "2b4416120a1ab991f985be87d68d06987ee1ffb11a198567581d54fcb993e1e2",
+        "requires_attribution": true
+      },
+      "source": {
+        "kind": "official",
+        "url": "https://huggingface.co/bartowski/gemma-2-2b-it-abliterated-GGUF/resolve/main/gemma-2-2b-it-abliterated-Q4_K_M.gguf"
+      }
+    },
+    {
+      "id": "qwen2.5-7b-instruct-abliterated-v2-q4_k_m",
+      "family_id": "qwen2.5-7b-instruct-abliterated",
+      "display_name": "Qwen 2.5 7B Instruct (abliterated v2) Q4_K_M",
+      "version": "1",
+      "file_name": "Qwen2.5-7B-Instruct-abliterated-v2.Q4_K_M.gguf",
+      "sha256": "da9272f09cd51d27aaadf37c1a2a3e079763682688aa1601d7406062b0caa5aa",
+      "size_bytes": 4683073920,
+      "prompt_template": "chatml",
+      "capabilities": [
+        "chat"
+      ],
+      "aliases": [
+        "qwen25-7b-abliterated-q4"
+      ],
+      "profile": "uncensored",
+      "license": {
+        "spdx": "Apache-2.0",
+        "title": "Apache License 2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "requires_attribution": false
+      },
+      "source": {
+        "kind": "official",
+        "url": "https://huggingface.co/QuantFactory/Qwen2.5-7B-Instruct-abliterated-v2-GGUF/resolve/main/Qwen2.5-7B-Instruct-abliterated-v2.Q4_K_M.gguf"
+      }
+    },
+    {
+      "id": "qwen2.5-coder-7b-instruct-abliterated-q4_k_m",
+      "family_id": "qwen2.5-coder-7b-instruct-abliterated",
+      "display_name": "Qwen 2.5 Coder 7B Instruct (abliterated) Q4_K_M",
+      "version": "1",
+      "file_name": "Qwen2.5-Coder-7B-Instruct-abliterated-Q4_K_M.gguf",
+      "sha256": "fdf02c16fb654ff60b2c30f1e91573ebc603a7084df3449df89120dca2b18170",
+      "size_bytes": 4683074400,
+      "prompt_template": "chatml",
+      "capabilities": [
+        "chat",
+        "code"
+      ],
+      "aliases": [
+        "qwen25-coder-7b-abliterated-q4"
+      ],
+      "profile": "uncensored",
+      "license": {
+        "spdx": "Apache-2.0",
+        "title": "Apache License 2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "requires_attribution": false
+      },
+      "source": {
+        "kind": "official",
+        "url": "https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-abliterated-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-abliterated-Q4_K_M.gguf"
       }
     }
   ],
