@@ -53,7 +53,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm --prefix ui/web build
+      - run: npm --prefix ui/web run build
       - run: cargo build --release --workspace
 
   audit:
