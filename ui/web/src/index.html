@@ -7,69 +7,87 @@
     <link rel="stylesheet" href="/assets/styles.css">
   </head>
   <body>
-    <main class="app-shell">
-      <header>
-        <p class="eyebrow">Offline-by-default portable runtime</p>
-        <h1>USBuddy</h1>
-        <p id="status">Loading runtime status…</p>
-      </header>
-
-      <section class="panel" id="advisories-section" hidden>
-        <h2>⚠️ Catalog advisories</h2>
-        <ul id="advisories"></ul>
-      </section>
-
-      <section class="panel" id="picker-section">
-        <h2>Model</h2>
-        <div id="model-list" class="model-list"></div>
-        <div id="no-models" class="empty-hint" hidden>
-          No models found. Copy a <code>.gguf</code> file to the <code>models/</code>
-          folder on the drive, or run <code>usbuddy-installer-cli model download</code>.
+    <div class="app">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <h1>USBuddy</h1>
+          <button id="sidebar-toggle" class="icon-btn" title="Hide sidebar" aria-label="Hide sidebar">‹</button>
         </div>
 
-        <div class="context-row" id="context-row" hidden>
-          <label for="context-slider">Context length</label>
-          <input id="context-slider" type="range" min="512" max="32768" step="512" value="4096">
-          <span id="context-value">4096 tokens</span>
+        <div class="sidebar-section">
+          <div class="section-label">Model</div>
+          <select id="model-select" class="select"></select>
+          <div id="no-models" class="hint" hidden>
+            No models on this drive. Drop a <code>.gguf</code> into <code>models/</code>.
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="section-label">Context length</div>
+          <div class="slider-row">
+            <input id="context-slider" type="range" min="512" max="32768" step="512" value="4096">
+            <span id="context-value" class="mono">4,096</span>
+          </div>
           <span id="ram-badge" class="ram-badge"></span>
         </div>
 
-        <div class="launch-controls" id="launch-controls" hidden>
-          <button id="launch-btn" class="btn primary">Launch model</button>
-          <button id="stop-btn" class="btn danger" hidden>Stop model</button>
+        <div class="sidebar-section">
+          <button id="launch-btn" class="btn btn-primary">Launch model</button>
+          <button id="stop-btn" class="btn btn-danger" hidden>Stop model</button>
+          <p id="launch-status" class="hint"></p>
         </div>
-        <p id="launch-status" class="launch-status"></p>
-      </section>
 
-      <section class="panel chat-panel" id="chat-section" hidden>
-        <h2>Chat</h2>
-        <div id="chat-messages" class="chat-messages"></div>
-        <form id="chat-form" class="chat-form">
-          <textarea
-            id="chat-input"
-            class="chat-input"
-            placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
-            rows="3"
-          ></textarea>
-          <button type="submit" class="btn primary">Send</button>
+        <div class="sidebar-section" id="advisories-section" hidden>
+          <div class="section-label">⚠️ Advisories</div>
+          <ul id="advisories" class="advisory-list"></ul>
+        </div>
+
+        <div class="sidebar-foot">
+          <div class="mono small" id="ram-info">—</div>
+          <div class="mono small" id="platform">—</div>
+          <div class="mono small">v<span id="version">—</span></div>
+        </div>
+      </aside>
+
+      <main class="chat" id="chat">
+        <header class="chat-head">
+          <button id="sidebar-show" class="icon-btn" title="Show sidebar" aria-label="Show sidebar" hidden>☰</button>
+          <div class="chat-title" id="chat-title">USBuddy</div>
+          <div class="chat-head-right">
+            <button id="new-chat" class="icon-btn" title="New chat" aria-label="New chat">+</button>
+          </div>
+        </header>
+
+        <div id="chat-messages" class="chat-messages">
+          <div class="empty-state" id="empty-state">
+            <h2>Ready when you are.</h2>
+            <p id="empty-hint">Pick a model in the sidebar and click <strong>Launch model</strong>.</p>
+          </div>
+        </div>
+
+        <form id="chat-form" class="chat-form" autocomplete="off">
+          <div class="chat-input-wrap">
+            <textarea
+              id="chat-input"
+              class="chat-input"
+              placeholder="Message USBuddy… (Enter to send, Shift+Enter for newline)"
+              rows="1"
+            ></textarea>
+            <button type="button" id="stop-gen-btn" class="btn btn-secondary send-btn" hidden title="Stop generating">
+              <span>Stop</span>
+            </button>
+            <button type="submit" id="send-btn" class="btn btn-primary send-btn" disabled>
+              <span>Send</span>
+            </button>
+          </div>
+          <div class="chat-foot" id="chat-foot">
+            <span id="status-line">Loading…</span>
+          </div>
         </form>
-      </section>
+      </main>
+    </div>
 
-      <section class="panel grid info-grid">
-        <div>
-          <h2>Runtime version</h2>
-          <p id="version">—</p>
-        </div>
-        <div>
-          <h2>RAM available</h2>
-          <p id="ram-info">—</p>
-        </div>
-        <div>
-          <h2>Platform</h2>
-          <p id="platform">—</p>
-        </div>
-      </section>
-    </main>
+    <script type="module" src="/assets/markdown.js"></script>
     <script type="module" src="/assets/app.js"></script>
   </body>
 </html>
