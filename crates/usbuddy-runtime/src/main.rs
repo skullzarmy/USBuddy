@@ -319,7 +319,7 @@ async fn api_chat_proxy(
     let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
     let upstream = format!("http://127.0.0.1:{LLAMA_SERVER_PORT}{path}{query}");
 
-    let body_bytes = axum::body::to_bytes(body, usize::MAX)
+    let body_bytes = axum::body::to_bytes(body, 10 * 1024 * 1024)
         .await
         .map_err(|e| AppError::internal(e.to_string()))?;
 
