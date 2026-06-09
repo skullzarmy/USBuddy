@@ -189,6 +189,12 @@ impl DriveLayout {
         let mut discovered = Vec::new();
         for entry in WalkDir::new(self.models_dir()).max_depth(2) {
             let entry = entry.map_err(|error| UsbBuddyError::InvalidState(error.to_string()))?;
+            let file_name = entry.file_name().to_string_lossy();
+            // Skip macOS AppleDouble metadata sidecars and other dot-files
+            // that filesystems like exFAT accumulate when a Mac writes to them.
+            if file_name.starts_with("._") || file_name == ".DS_Store" {
+                continue;
+            }
             if entry.file_type().is_file()
                 && entry
                     .path()
