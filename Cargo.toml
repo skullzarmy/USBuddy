@@ -2,7 +2,10 @@
 members = [
   "crates/usbuddy-core",
   "crates/usbuddy-installer-cli",
+  "crates/usbuddy-installer-gui",
+  "crates/usbuddy-installer-tui",
   "crates/usbuddy-runtime",
+  "xtask",
 ]
 resolver = "2"
 

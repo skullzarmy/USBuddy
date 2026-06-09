@@ -2,7 +2,11 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     process::Child,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Context;
@@ -41,6 +45,14 @@ const STYLES_CSS: &str = include_str!(concat!(
 /// Port used internally by llama-server; separate from the runtime's own port.
 const LLAMA_SERVER_PORT: u16 = 8766;
 
+/// Default idle-unload threshold in seconds. After this much inactivity the
+/// runtime SIGTERMs llama-server to release mlocked weights. Set to 0 via
+/// `--idle-timeout-secs 0` to disable.
+const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
+
+/// How often the idle-watch task wakes up to check the last-activity stamp.
+const IDLE_CHECK_INTERVAL_SECS: u64 = 15;
+
 #[derive(Debug, Parser)]
 #[command(name = "usbuddy-runtime", version = compiled_version(), about = "USBuddy portable runtime wrapper")]
 struct Cli {
@@ -58,6 +70,10 @@ enum RuntimeCommand {
         port: u16,
         #[arg(long, default_value_t = false)]
         open_browser: bool,
+        /// Idle-unload threshold in seconds. After this much inactivity the
+        /// runtime stops llama-server so weights leave mlocked RAM. 0 disables.
+        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
+        idle_timeout_secs: u64,
     },
     /// Print drive and catalog state to stdout without starting the server.
     Inspect {
@@ -75,6 +91,23 @@ struct RuntimeState {
     layout: DriveLayout,
     catalog: Option<Catalog>,
     llama_process: Arc<Mutex<Option<Child>>>,
+    /// Unix-epoch seconds of the last activity that should keep llama-server
+    /// alive (model launch or chat proxy hit). Read by the idle-watcher.
+    last_activity: Arc<AtomicU64>,
+    idle_timeout_secs: u64,
+}
+
+fn now_epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn touch_activity(state: &RuntimeState) {
+    state
+        .last_activity
+        .store(now_epoch_secs(), Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         RuntimeCommand::Inspect { drive } => {
-            let state = load_state(drive)?;
+            let state = load_state(drive, DEFAULT_IDLE_TIMEOUT_SECS)?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&status_payload(&state, "Inspection only"))?
@@ -96,8 +129,9 @@ async fn main() -> anyhow::Result<()> {
             drive,
             port,
             open_browser,
+            idle_timeout_secs,
         } => {
-            let state = Arc::new(load_state(drive)?);
+            let state = Arc::new(load_state(drive, idle_timeout_secs)?);
 
             // Kill llama-server on Ctrl-C.
             let cleanup_state = state.clone();
@@ -106,6 +140,39 @@ async fn main() -> anyhow::Result<()> {
                 kill_llama_server(&cleanup_state.llama_process);
                 std::process::exit(0);
             });
+
+            // Idle-unload watcher: if llama-server is running and there's been
+            // no activity for `idle_timeout_secs`, stop it. The footprint
+            // requirement says mlocked weights at idle contradict the pitch.
+            if idle_timeout_secs > 0 {
+                let watch_state = state.clone();
+                tokio::spawn(async move {
+                    let mut ticker =
+                        tokio::time::interval(Duration::from_secs(IDLE_CHECK_INTERVAL_SECS));
+                    // First tick fires immediately; skip it so we don't insta-kill.
+                    ticker.tick().await;
+                    loop {
+                        ticker.tick().await;
+                        let running = watch_state
+                            .llama_process
+                            .lock()
+                            .map(|g| g.is_some())
+                            .unwrap_or(false);
+                        if !running {
+                            continue;
+                        }
+                        let last = watch_state.last_activity.load(Ordering::Relaxed);
+                        let now = now_epoch_secs();
+                        if now.saturating_sub(last) >= watch_state.idle_timeout_secs {
+                            eprintln!(
+                                "USBuddy: stopping llama-server after {}s idle (footprint policy)",
+                                watch_state.idle_timeout_secs
+                            );
+                            kill_llama_server(&watch_state.llama_process);
+                        }
+                    }
+                });
+            }
 
             let app = Router::new()
                 .route("/", get(index))
@@ -137,7 +204,7 @@ async fn main() -> anyhow::Result<()> {
 // State helpers
 // ---------------------------------------------------------------------------
 
-fn load_state(drive: PathBuf) -> anyhow::Result<RuntimeState> {
+fn load_state(drive: PathBuf, idle_timeout_secs: u64) -> anyhow::Result<RuntimeState> {
     let layout = DriveLayout::new(drive);
     let catalog = if layout.catalog_path().exists() {
         Some(load_catalog(&layout.catalog_path())?)
@@ -148,6 +215,8 @@ fn load_state(drive: PathBuf) -> anyhow::Result<RuntimeState> {
         layout,
         catalog,
         llama_process: Arc::new(Mutex::new(None)),
+        last_activity: Arc::new(AtomicU64::new(now_epoch_secs())),
+        idle_timeout_secs,
     })
 }
 
@@ -195,6 +264,8 @@ fn status_payload(state: &RuntimeState, message: &str) -> RuntimeStatus {
             .collect(),
         llama_running,
         llama_port: LLAMA_SERVER_PORT,
+        idle_timeout_secs: state.idle_timeout_secs,
+        last_activity_epoch_secs: state.last_activity.load(Ordering::Relaxed),
     }
 }
 
@@ -235,6 +306,7 @@ async fn api_launch(
     State(state): State<Arc<RuntimeState>>,
     Json(req): Json<LaunchRequest>,
 ) -> Result<Json<LaunchResponse>, AppError> {
+    touch_activity(&state);
     let model_path = resolve_model_path(&state, &req.model_id)?;
 
     // RAM-fit check.
@@ -308,12 +380,13 @@ async fn api_stop(State(state): State<Arc<RuntimeState>>) -> Json<serde_json::Va
 
 /// Transparent reverse-proxy: `/api/chat/**` → llama-server `/v1/chat/**`.
 async fn api_chat_proxy(
-    State(_state): State<Arc<RuntimeState>>,
+    State(state): State<Arc<RuntimeState>>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, AppError> {
+    touch_activity(&state);
     let client = reqwest::Client::new();
     let path = uri.path().replacen("/api/chat", "/v1/chat", 1);
     let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
@@ -524,6 +597,8 @@ struct RuntimeStatus {
     ram_previews: Vec<RamDecision>,
     llama_running: bool,
     llama_port: u16,
+    idle_timeout_secs: u64,
+    last_activity_epoch_secs: u64,
 }
 
 #[derive(Debug, Deserialize)]

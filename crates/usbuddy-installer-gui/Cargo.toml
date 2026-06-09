@@ -1,0 +1,17 @@
+[package]
+name = "usbuddy-installer-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+eframe = { version = "0.34.3", default-features = false, features = ["default_fonts", "glow"] }
+egui = "0.34.3"
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+usbuddy-core = { path = "../usbuddy-core" }
