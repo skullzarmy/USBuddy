@@ -454,6 +454,112 @@ fn ensure_unix_executable(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Default GitHub Releases base URL for the USBuddy runtime per-platform
+/// assets. The "latest/download" form auto-redirects to whatever the most
+/// recent published (non-prerelease, non-draft) release is, so callers
+/// don't need to know the current tag.
+pub const DEFAULT_RUNTIME_RELEASE_BASE: &str =
+    "https://github.com/skullzarmy/USBuddy/releases/latest/download";
+
+impl EngineTarget {
+    /// Bare per-platform runtime asset name as published by USBuddy's
+    /// `release.yml` workflow. Must stay in lock-step with the workflow.
+    pub fn runtime_asset_name(self) -> String {
+        let suffix = if self.os == "windows" { ".exe" } else { "" };
+        format!("usbuddy-runtime-{}{}", self.dir_name(), suffix)
+    }
+
+    /// Full URL for the runtime asset under a given base (defaults to
+    /// `DEFAULT_RUNTIME_RELEASE_BASE` — the "latest release" alias).
+    pub fn runtime_asset_url(self, base: &str) -> String {
+        format!(
+            "{}/{}",
+            base.trim_end_matches('/'),
+            self.runtime_asset_name()
+        )
+    }
+
+    /// Filename used on the drive for this target's runtime binary.
+    pub fn runtime_binary(self) -> &'static str {
+        if self.os == "windows" {
+            "usbuddy-runtime.exe"
+        } else {
+            "usbuddy-runtime"
+        }
+    }
+}
+
+/// Outcome of installing one per-platform runtime binary.
+#[derive(Debug, Clone, Serialize)]
+pub struct InstalledRuntime {
+    pub target: EngineTarget,
+    pub runtime_path: PathBuf,
+    pub bytes_installed: u64,
+}
+
+/// Download the USBuddy runtime binary for one or more targets from a
+/// GitHub release and place it at `versions/<v>/bin/<os>-<arch>/`.
+///
+/// `base_url` should be the directory that contains the per-platform
+/// assets, e.g. `https://github.com/skullzarmy/USBuddy/releases/latest/download`
+/// or `https://github.com/skullzarmy/USBuddy/releases/download/v0.2.0`.
+pub fn install_runtimes_from_release(
+    layout: &DriveLayout,
+    version: &str,
+    selection: &EngineSelection,
+    base_url: &str,
+    mut progress: impl FnMut(String),
+) -> Result<Vec<InstalledRuntime>> {
+    let targets = selection.resolve()?;
+    let mut installed = Vec::with_capacity(targets.len());
+
+    for target in targets {
+        let bin_dir = layout
+            .version_dir(version)
+            .join("bin")
+            .join(target.dir_name());
+        fs::create_dir_all(&bin_dir)?;
+
+        let asset = target.runtime_asset_name();
+        let url = target.runtime_asset_url(base_url);
+        let dest = bin_dir.join(target.runtime_binary());
+
+        progress(format!("→ downloading {asset}"));
+        download_verified(&url, &dest, None).map_err(|e| {
+            UsbBuddyError::InvalidState(format!(
+                "runtime download failed for {} ({}): {e} — \
+                 if there is no published USBuddy release for this platform yet, \
+                 use `install-runtime` without --from-release on a {} host instead",
+                target.dir_name(),
+                url,
+                target.dir_name(),
+            ))
+        })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&dest)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&dest, perms)?;
+        }
+
+        let bytes = fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+        progress(format!(
+            "✓ {} runtime ready ({:.2} MiB)",
+            target.dir_name(),
+            bytes as f64 / 1_048_576.0
+        ));
+        installed.push(InstalledRuntime {
+            target,
+            runtime_path: dest,
+            bytes_installed: bytes,
+        });
+    }
+
+    Ok(installed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,6 +597,26 @@ mod tests {
         assert_eq!(
             EngineTarget::WINDOWS_X64.asset_name("b9570"),
             "llama-b9570-bin-win-cpu-x64.zip"
+        );
+    }
+
+    #[test]
+    fn runtime_asset_names_match_release_convention() {
+        assert_eq!(
+            EngineTarget::MACOS_ARM64.runtime_asset_name(),
+            "usbuddy-runtime-macos-arm64"
+        );
+        assert_eq!(
+            EngineTarget::LINUX_X64.runtime_asset_name(),
+            "usbuddy-runtime-linux-x64"
+        );
+        assert_eq!(
+            EngineTarget::WINDOWS_ARM64.runtime_asset_name(),
+            "usbuddy-runtime-windows-arm64.exe"
+        );
+        assert_eq!(
+            EngineTarget::LINUX_X64.runtime_asset_url(DEFAULT_RUNTIME_RELEASE_BASE),
+            "https://github.com/skullzarmy/USBuddy/releases/latest/download/usbuddy-runtime-linux-x64"
         );
     }
 }

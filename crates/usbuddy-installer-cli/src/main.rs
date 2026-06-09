@@ -9,7 +9,8 @@ use usbuddy_core::{
     compiled_version,
     download::download_verified,
     engine::{
-        DEFAULT_LLAMA_TAG, EngineSelection, install_engines, report_status as engine_report_status,
+        DEFAULT_LLAMA_TAG, DEFAULT_RUNTIME_RELEASE_BASE, EngineSelection, install_engines,
+        install_runtimes_from_release, report_status as engine_report_status,
     },
     layout::DriveLayout,
     license::{LicensePrefs, LicenseScope},
@@ -63,15 +64,30 @@ enum Commands {
         #[command(subcommand)]
         command: EngineCommand,
     },
-    /// Copy the locally-built usbuddy-runtime binary onto the drive for
-    /// the current host platform. Needed because there is no published
-    /// USBuddy release yet — once releases exist, prefer `update stage`.
+    /// Install the USBuddy runtime onto the drive. By default copies the
+    /// locally-built binary for the current host. With `--from-release`,
+    /// downloads per-platform runtime binaries from a published GitHub
+    /// release (use `--target all` to fully populate the stick).
     InstallRuntime {
         drive: PathBuf,
-        /// Path to the usbuddy-runtime binary to copy. Defaults to the
-        /// release-mode build from the current workspace.
+        /// Path to a locally-built usbuddy-runtime to copy (current-host
+        /// only). Ignored when `--from-release` is set.
         #[arg(long)]
         from: Option<PathBuf>,
+        /// Download runtime binaries from a GitHub release instead of
+        /// copying a local build. Use `--target all` to provision every
+        /// supported platform on the stick.
+        #[arg(long)]
+        from_release: bool,
+        /// Release tag to fetch from (e.g. `v0.2.0`). Defaults to the
+        /// latest published release. Only meaningful with `--from-release`.
+        #[arg(long)]
+        tag: Option<String>,
+        /// Which platform(s) to install for: `host` (default), `all`, or
+        /// a specific dir name like `linux-arm64`. Only meaningful with
+        /// `--from-release`.
+        #[arg(long, default_value = "host")]
+        target: String,
     },
     RamAssess {
         available_gb: f64,
@@ -533,11 +549,41 @@ fn main() -> anyhow::Result<()> {
             }
         },
 
-        Commands::InstallRuntime { drive, from } => {
+        Commands::InstallRuntime {
+            drive,
+            from,
+            from_release,
+            tag,
+            target,
+        } => {
             let layout = DriveLayout::new(drive);
             let current = layout
                 .read_current()
                 .with_context(|| "drive is not initialised")?;
+
+            if from_release {
+                let selection = EngineSelection::parse(&target)
+                    .map_err(|e| anyhow::anyhow!("invalid --target: {e}"))?;
+                let base = match tag.as_deref() {
+                    Some(t) => {
+                        let t = t.trim_start_matches('v');
+                        format!("https://github.com/skullzarmy/USBuddy/releases/download/v{t}")
+                    }
+                    None => DEFAULT_RUNTIME_RELEASE_BASE.to_string(),
+                };
+                let installed = install_runtimes_from_release(
+                    &layout,
+                    &current.active,
+                    &selection,
+                    &base,
+                    |line| {
+                        eprintln!("{line}");
+                    },
+                )?;
+                print_json(&installed)?;
+                return Ok(());
+            }
+
             let platform = detect_platform();
             let arch = match platform.arch.as_str() {
                 "x86_64" => "x64".to_string(),
@@ -558,7 +604,7 @@ fn main() -> anyhow::Result<()> {
             });
             if !source.exists() {
                 anyhow::bail!(
-                    "runtime binary not found at {} — run `cargo build --release -p usbuddy-runtime` first or pass --from",
+                    "runtime binary not found at {} — run `cargo build --release -p usbuddy-runtime` first, pass --from, or use --from-release",
                     source.display()
                 );
             }

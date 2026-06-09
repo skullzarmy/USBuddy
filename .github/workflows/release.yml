@@ -51,36 +51,98 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive: usbuddy-windows-x64.zip
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            runtime_asset: usbuddy-runtime-macos-arm64
+            archive: usbuddy-macos-arm64.tar.gz
+            build_full: true
+            setup: native
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            runtime_asset: usbuddy-runtime-macos-x64
+            archive: usbuddy-macos-x64.tar.gz
+            build_full: true
+            setup: native
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            runtime_asset: usbuddy-runtime-linux-x64
             archive: usbuddy-linux-x64.tar.gz
-          - os: macos-latest
-            target: universal2-apple-darwin
-            archive: usbuddy-macos-universal.tar.gz
+            build_full: true
+            setup: native
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            runtime_asset: usbuddy-runtime-linux-arm64
+            archive: ""
+            build_full: false
+            setup: cross
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            runtime_asset: usbuddy-runtime-windows-x64.exe
+            archive: usbuddy-windows-x64.zip
+            build_full: true
+            setup: native
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            runtime_asset: usbuddy-runtime-windows-arm64.exe
+            archive: ""
+            build_full: false
+            setup: rustup-target
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
       - name: Install Linux GUI deps
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.build_full
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libwayland-dev \
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libgl1-mesa-dev libssl-dev pkg-config
+      - name: Install cross (linux-arm64 only)
+        if: matrix.setup == 'cross'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
       - uses: actions/setup-node@v4
+        if: matrix.build_full
         with:
           node-version: 22
       - run: npm --prefix ui/web build
-      - name: Build workspace
+        if: matrix.build_full
+      - name: Build workspace (host-native)
+        if: matrix.build_full
         env:
           USBUDDY_VERSION: ${{ inputs.version }}
-        run: cargo build --release --workspace
-      - name: Package asset
+        run: cargo build --release --workspace --target ${{ matrix.target }}
+      - name: Build runtime only (cross via cross-rs)
+        if: matrix.setup == 'cross'
+        env:
+          USBUDDY_VERSION: ${{ inputs.version }}
+        run: cross build --release -p usbuddy-runtime --target ${{ matrix.target }}
+      - name: Build runtime only (cross via rustup target)
+        if: matrix.setup == 'rustup-target'
+        env:
+          USBUDDY_VERSION: ${{ inputs.version }}
+        run: cargo build --release -p usbuddy-runtime --target ${{ matrix.target }}
+      - name: Stage per-platform runtime asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            src="target/${{ matrix.target }}/release/usbuddy-runtime.exe"
+          else
+            src="target/${{ matrix.target }}/release/usbuddy-runtime"
+          fi
+          cp "$src" "dist/${{ matrix.runtime_asset }}"
+          ( cd dist && sha256sum "${{ matrix.runtime_asset }}" > "${{ matrix.runtime_asset }}.sha256" )
+      - name: Package full archive (host-native targets only)
+        if: matrix.build_full
         shell: bash
         run: |
           set -euo pipefail
@@ -91,31 +153,31 @@ jobs:
           cp fixtures/catalog/official.catalog.json "$stage/catalog.json"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             for bin in usbuddy-installer-cli usbuddy-installer-tui usbuddy-installer-gui usbuddy-runtime; do
-              cp "target/release/${bin}.exe" "$stage/bin/"
+              cp "target/${{ matrix.target }}/release/${bin}.exe" "$stage/bin/"
             done
-            # Drive-side launcher shims, copied to archive root for convenience.
             cp launch-windows.bat "$stage/"
-            powershell -Command "Compress-Archive -Path $stage\* -DestinationPath ${{ matrix.archive }}"
+            powershell -Command "Compress-Archive -Path $stage\* -DestinationPath dist/${{ matrix.archive }}"
           else
             for bin in usbuddy-installer-cli usbuddy-installer-tui usbuddy-installer-gui usbuddy-runtime; do
-              cp "target/release/${bin}" "$stage/bin/"
+              cp "target/${{ matrix.target }}/release/${bin}" "$stage/bin/"
             done
             if [[ "${{ runner.os }}" == "macOS" ]]; then
               cp launch-macos.command "$stage/"
             else
               cp launch-linux.sh "$stage/"
             fi
-            tar -czf ${{ matrix.archive }} -C "$stage" .
+            tar -czf "dist/${{ matrix.archive }}" -C "$stage" .
           fi
-      - name: Checksum asset
-        shell: bash
-        run: sha256sum ${{ matrix.archive }} > ${{ matrix.archive }}.sha256
+          ( cd dist && sha256sum "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256" )
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
           path: |
-            ${{ matrix.archive }}
-            ${{ matrix.archive }}.sha256
+            dist/${{ matrix.runtime_asset }}
+            dist/${{ matrix.runtime_asset }}.sha256
+            dist/${{ matrix.archive }}
+            dist/${{ matrix.archive }}.sha256
+          if-no-files-found: ignore
 
   package:
     needs: build
