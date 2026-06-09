@@ -19,7 +19,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    download::download_verified,
+    download::{DownloadProgress, download_verified_with_progress},
     error::{Result, UsbBuddyError},
     layout::DriveLayout,
 };
@@ -221,6 +221,18 @@ pub struct InstalledEngine {
     pub files_installed: usize,
 }
 
+/// Progress for one asset (engine archive or runtime binary) inside a
+/// multi-asset install. `idx` is 1-based to match how it reads in the UI
+/// ("1 of 6").
+#[derive(Debug, Clone)]
+pub struct AssetProgress {
+    pub name: String,
+    pub idx: usize,
+    pub total: usize,
+    pub bytes_done: u64,
+    pub bytes_total: Option<u64>,
+}
+
 /// Install one or more engine targets onto the drive. Each archive is
 /// downloaded to a temp file, verified to contain `llama-server`, then
 /// every file is extracted flat into `versions/<v>/bin/<os>-<arch>/`.
@@ -232,15 +244,30 @@ pub fn install_engines(
     version: &str,
     selection: &EngineSelection,
     tag: &str,
+    progress: impl FnMut(String),
+) -> Result<Vec<InstalledEngine>> {
+    install_engines_with_asset_progress(layout, version, selection, tag, progress, |_| {})
+}
+
+/// Same as [`install_engines`] but additionally fires `asset_progress`
+/// every ~256 KiB of every asset download with a precise byte-level
+/// position. UIs use it to render a determinate per-asset progress bar.
+pub fn install_engines_with_asset_progress(
+    layout: &DriveLayout,
+    version: &str,
+    selection: &EngineSelection,
+    tag: &str,
     mut progress: impl FnMut(String),
+    mut asset_progress: impl FnMut(AssetProgress),
 ) -> Result<Vec<InstalledEngine>> {
     let targets = selection.resolve()?;
-    let mut installed = Vec::with_capacity(targets.len());
+    let total_count = targets.len();
+    let mut installed = Vec::with_capacity(total_count);
 
     let cache_dir = layout.usbuddy_dir().join("engine-cache").join(tag);
     fs::create_dir_all(&cache_dir)?;
 
-    for target in targets {
+    for (idx, target) in targets.iter().enumerate() {
         let bin_dir = layout
             .version_dir(version)
             .join("bin")
@@ -253,7 +280,26 @@ pub fn install_engines(
 
         if !archive_path.exists() {
             progress(format!("→ downloading {asset_name}"));
-            download_verified(&url, &archive_path, None).map_err(|e| {
+            let asset_name_for_cb = asset_name.clone();
+            let one_based = idx + 1;
+            download_verified_with_progress(
+                &url,
+                &archive_path,
+                None,
+                |DownloadProgress {
+                     bytes_done,
+                     bytes_total,
+                 }| {
+                    asset_progress(AssetProgress {
+                        name: asset_name_for_cb.clone(),
+                        idx: one_based,
+                        total: total_count,
+                        bytes_done,
+                        bytes_total,
+                    });
+                },
+            )
+            .map_err(|e| {
                 UsbBuddyError::InvalidState(format!(
                     "engine download failed for {}: {e}",
                     target.dir_name()
@@ -261,6 +307,16 @@ pub fn install_engines(
             })?;
         } else {
             progress(format!("• cached {asset_name}"));
+            // Synthesize a "100%" tick for the bar so the UI shows the
+            // cached asset as done rather than stuck at 0.
+            let bytes = fs::metadata(&archive_path).map(|m| m.len()).unwrap_or(0);
+            asset_progress(AssetProgress {
+                name: asset_name.clone(),
+                idx: idx + 1,
+                total: total_count,
+                bytes_done: bytes,
+                bytes_total: Some(bytes),
+            });
         }
 
         progress(format!("→ extracting into {}", bin_dir.display()));
@@ -290,7 +346,7 @@ pub fn install_engines(
         ));
 
         installed.push(InstalledEngine {
-            target,
+            target: *target,
             server_path,
             bytes_installed: report.bytes,
             files_installed: report.files,
@@ -508,12 +564,34 @@ pub fn install_runtimes_from_release(
     version: &str,
     selection: &EngineSelection,
     base_url: &str,
+    progress: impl FnMut(String),
+) -> Result<Vec<InstalledRuntime>> {
+    install_runtimes_from_release_with_asset_progress(
+        layout,
+        version,
+        selection,
+        base_url,
+        progress,
+        |_| {},
+    )
+}
+
+/// Same as [`install_runtimes_from_release`] but additionally fires
+/// `asset_progress` with byte-level position so UIs can render a
+/// determinate per-asset bar.
+pub fn install_runtimes_from_release_with_asset_progress(
+    layout: &DriveLayout,
+    version: &str,
+    selection: &EngineSelection,
+    base_url: &str,
     mut progress: impl FnMut(String),
+    mut asset_progress: impl FnMut(AssetProgress),
 ) -> Result<Vec<InstalledRuntime>> {
     let targets = selection.resolve()?;
-    let mut installed = Vec::with_capacity(targets.len());
+    let total_count = targets.len();
+    let mut installed = Vec::with_capacity(total_count);
 
-    for target in targets {
+    for (idx, target) in targets.iter().enumerate() {
         let bin_dir = layout
             .version_dir(version)
             .join("bin")
@@ -525,7 +603,26 @@ pub fn install_runtimes_from_release(
         let dest = bin_dir.join(target.runtime_binary());
 
         progress(format!("→ downloading {asset}"));
-        download_verified(&url, &dest, None).map_err(|e| {
+        let asset_for_cb = asset.clone();
+        let one_based = idx + 1;
+        download_verified_with_progress(
+            &url,
+            &dest,
+            None,
+            |DownloadProgress {
+                 bytes_done,
+                 bytes_total,
+             }| {
+                asset_progress(AssetProgress {
+                    name: asset_for_cb.clone(),
+                    idx: one_based,
+                    total: total_count,
+                    bytes_done,
+                    bytes_total,
+                });
+            },
+        )
+        .map_err(|e| {
             UsbBuddyError::InvalidState(format!(
                 "runtime download failed for {} ({}): {e} — \
                  if there is no published USBuddy release for this platform yet, \
@@ -551,7 +648,7 @@ pub fn install_runtimes_from_release(
             bytes as f64 / 1_048_576.0
         ));
         installed.push(InstalledRuntime {
-            target,
+            target: *target,
             runtime_path: dest,
             bytes_installed: bytes,
         });
