@@ -299,7 +299,7 @@ advisor** on top.
 - **Update channels:** single `stable` channel for v1. Multi-channel deferred
   until there's a real use case.
 - **Advisories:** root-level `advisories: []` array — see [Updates](#updates).
-- Full schema lives in `docs/CATALOG-SPEC.md` (forthcoming).
+- Full schema lives in [`docs/CATALOG-SPEC.md`](./docs/CATALOG-SPEC.md).
 
 ### Three sources of models, one picker
 
@@ -424,9 +424,12 @@ see what's been agreed to on their behalf.
 
 ### Footprint
 - `docs/FOOTPRINT.md` documents per-OS residual traces honestly.
-- A future `footprint.yml` workflow will run snapshot-diff tests (Windows
-  Sandbox / fresh macOS runner / Docker) nightly to catch regressions.
-  **Deferred** — not blocking v0.1.0.
+- [`.github/workflows/footprint.yml`](./.github/workflows/footprint.yml)
+  runs a snapshot-diff regression on every PR that touches the runtime, and
+  weekly on a cron. **Linux-only today** — it boots the runtime against a
+  scratch drive directory, diffs `$HOME` + `/tmp` before and after, and
+  uploads the diff as an artifact. Windows Sandbox / macOS runners and
+  `/proc`-level mlock assertions are tracked follow-ups.
 
 ### Trust root
 - **This GitHub repo. That's it.** No external PKI.
@@ -635,11 +638,14 @@ Cached with `Swatinem/rust-cache@v2`.
 - Maintainer reviews the draft, edits notes, publishes manually.
 
 ### Deferred (separate workflows, post-v0.1.0)
-- `footprint.yml` — snapshot-diff regression tests on Windows Sandbox / macOS
-  / Docker.
-- `catalog-validate.yml` — JSON-schema check + URL liveness + upstream SHA256
-  verification, gating catalog PRs.
-- End-to-end install test on real USB-like volumes.
+- `footprint.yml` — Windows Sandbox / macOS snapshot-diff runners
+  (Linux runner already in place).
+- `catalog-validate.yml` extensions — URL liveness probing and
+  upstream SHA256 verification against HF LFS pointers as a PR gate
+  (basic schema validation already runs today).
+- E2E install test against a real exFAT-formatted USB volume
+  (the in-tempdir E2E test that exercises the full installer-cli
+  lifecycle is already in place).
 
 ---
 
@@ -671,7 +677,6 @@ Cached with `Swatinem/rust-cache@v2`.
 ### Open (implementation work, not architecture)
 - Empirical tuning of RAM-fit threshold constants on real hardware
 - Populate the catalog with a wider curated model set (the 5 shipped today are a starting point)
-- Validate license `sha256` fields in the catalog against upstream license texts (currently zero-placeholders)
 - Windows / macOS snapshot-diff runners for `footprint.yml`
 
 ## License

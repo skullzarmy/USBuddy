@@ -13,4 +13,5 @@ clap = { workspace = true, features = ["env"] }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 toml.workspace = true

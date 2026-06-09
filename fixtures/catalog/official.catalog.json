@@ -1,6 +1,6 @@
 {
   "schema": "usbuddy.catalog/v1",
-  "generated_at": "2026-06-09T04:26:57Z",
+  "generated_at": "2026-06-09T04:36:05Z",
   "source": "repository",
   "runtime": {
     "min": "0.1.0",
@@ -30,7 +30,7 @@
         "spdx": "Apache-2.0",
         "title": "Apache License 2.0",
         "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
-        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
         "requires_attribution": false
       },
       "source": {
@@ -59,7 +59,7 @@
         "spdx": "Apache-2.0",
         "title": "Apache License 2.0",
         "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
-        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
         "requires_attribution": false
       },
       "source": {
@@ -89,7 +89,7 @@
         "spdx": "LicenseRef-Llama-Community",
         "title": "Llama Community License",
         "url": "https://ai.meta.com/llama/license/",
-        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "sha256": "52779c01ea7524aaea8e10a12b736fd67e7c0ee6175bcedd931b5d48cfdb7afb",
         "requires_attribution": true
       },
       "source": {
@@ -123,7 +123,7 @@
         "spdx": "Apache-2.0",
         "title": "Apache License 2.0",
         "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
-        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
         "requires_attribution": false
       },
       "source": {
@@ -151,7 +151,7 @@
         "spdx": "LicenseRef-Llama-Community",
         "title": "Llama Community License",
         "url": "https://ai.meta.com/llama/license/",
-        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "sha256": "52779c01ea7524aaea8e10a12b736fd67e7c0ee6175bcedd931b5d48cfdb7afb",
         "requires_attribution": true
       },
       "source": {

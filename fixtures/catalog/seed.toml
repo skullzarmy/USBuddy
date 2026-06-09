@@ -9,9 +9,9 @@
 # fully-populated catalog to fixtures/catalog/official.catalog.json.
 #
 # License notes:
-#   - Each entry's license.sha256 is left as a placeholder. Paste the
-#     SHA256 of the upstream license text by hand or extend xtask with
-#     a `license-fetch` subcommand.
+#   - Each entry's license.sha256 is auto-computed from the body of
+#     license.url. To pin a known hash instead, add `sha256 = "..."`
+#     inside the `license = { ... }` table.
 #   - Gated models (Llama family) need HF_TOKEN set when running xtask.
 
 [catalog]
@@ -34,7 +34,7 @@ prompt_template = "chatml"
 capabilities = ["chat", "function_calling", "json_mode", "long_context"]
 aliases = ["qwen25-7b-q4"]
 profile = "aligned"
-license = { spdx = "Apache-2.0", title = "Apache License 2.0", url = "https://www.apache.org/licenses/LICENSE-2.0.txt", sha256 = "0000000000000000000000000000000000000000000000000000000000000000", requires_attribution = false }
+license = { spdx = "Apache-2.0", title = "Apache License 2.0", url = "https://www.apache.org/licenses/LICENSE-2.0.txt", requires_attribution = false }
 
 [[models]]
 id = "mistral-7b-instruct-v0.3-q4_k_m"
@@ -47,7 +47,7 @@ prompt_template = "mistral"
 capabilities = ["chat", "function_calling"]
 aliases = ["mistral-7b-q4"]
 profile = "aligned"
-license = { spdx = "Apache-2.0", title = "Apache License 2.0", url = "https://www.apache.org/licenses/LICENSE-2.0.txt", sha256 = "0000000000000000000000000000000000000000000000000000000000000000", requires_attribution = false }
+license = { spdx = "Apache-2.0", title = "Apache License 2.0", url = "https://www.apache.org/licenses/LICENSE-2.0.txt", requires_attribution = false }
 
 [[models]]
 id = "llama-3.1-8b-instruct-q4_k_m"
@@ -62,7 +62,7 @@ aliases = ["llama31-8b-q4"]
 profile = "aligned"
 gated = true
 gate_url = "https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct"
-license = { spdx = "LicenseRef-Llama-Community", title = "Llama Community License", url = "https://ai.meta.com/llama/license/", sha256 = "0000000000000000000000000000000000000000000000000000000000000000", requires_attribution = true }
+license = { spdx = "LicenseRef-Llama-Community", title = "Llama Community License", url = "https://ai.meta.com/llama/license/", requires_attribution = true }
 
 # ---------------------------------------------------------------------
 # Code-specialised.
@@ -79,7 +79,7 @@ prompt_template = "chatml"
 capabilities = ["chat", "code", "long_context"]
 aliases = ["qwen25-coder-7b-q4"]
 profile = "code"
-license = { spdx = "Apache-2.0", title = "Apache License 2.0", url = "https://www.apache.org/licenses/LICENSE-2.0.txt", sha256 = "0000000000000000000000000000000000000000000000000000000000000000", requires_attribution = false }
+license = { spdx = "Apache-2.0", title = "Apache License 2.0", url = "https://www.apache.org/licenses/LICENSE-2.0.txt", requires_attribution = false }
 
 # ---------------------------------------------------------------------
 # Minimally-aligned (refusal training removed / reduced).
@@ -97,4 +97,4 @@ prompt_template = "chatml"
 capabilities = ["chat"]
 aliases = ["dolphin-llama31-8b-q4"]
 profile = "minimally-aligned"
-license = { spdx = "LicenseRef-Llama-Community", title = "Llama Community License", url = "https://ai.meta.com/llama/license/", sha256 = "0000000000000000000000000000000000000000000000000000000000000000", requires_attribution = true }
+license = { spdx = "LicenseRef-Llama-Community", title = "Llama Community License", url = "https://ai.meta.com/llama/license/", requires_attribution = true }

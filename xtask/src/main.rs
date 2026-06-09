@@ -18,6 +18,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Parser)]
 #[command(name = "xtask", about = "USBuddy maintainer tasks")]
@@ -111,11 +112,11 @@ struct SeedLicense {
     spdx: String,
     title: String,
     url: String,
-    /// SHA256 of the license text. Required by the schema, but verifying it
-    /// is out of scope here — the maintainer pastes the upstream-published
-    /// hash. Pre-fill with zeros and fix up via a future `xtask
-    /// license-fetch` if needed.
-    sha256: String,
+    /// Optional override. When absent, xtask fetches `url` and uses
+    /// `sha256(body)`. Set this only if the upstream URL is unstable but
+    /// you have a known-good hash to pin to.
+    #[serde(default)]
+    sha256: Option<String>,
     #[serde(default)]
     requires_attribution: bool,
 }
@@ -260,7 +261,11 @@ fn parse_lfs_pointer(text: &str) -> Option<LfsPointer> {
 // Catalog assembly
 // --------------------------------------------------------------------
 
-fn build_catalog(seed: SeedFile, fetched: BTreeMap<String, LfsPointer>) -> Catalog {
+fn build_catalog(
+    seed: SeedFile,
+    fetched: BTreeMap<String, LfsPointer>,
+    license_hashes: BTreeMap<String, String>,
+) -> Catalog {
     let models = seed
         .models
         .into_iter()
@@ -288,6 +293,12 @@ fn build_catalog(seed: SeedFile, fetched: BTreeMap<String, LfsPointer>) -> Catal
                 .and_then(|s| s.to_str())
                 .unwrap_or(&m.hf_path)
                 .to_string();
+            let license_sha = m
+                .license
+                .sha256
+                .clone()
+                .or_else(|| license_hashes.get(&m.license.url).cloned())
+                .expect("license hash must be present (override or auto-fetched)");
             ModelEntry {
                 id: m.id,
                 family_id: m.family_id,
@@ -304,7 +315,7 @@ fn build_catalog(seed: SeedFile, fetched: BTreeMap<String, LfsPointer>) -> Catal
                     spdx: m.license.spdx,
                     title: m.license.title,
                     url: m.license.url,
-                    sha256: m.license.sha256,
+                    sha256: license_sha,
                     requires_attribution: m.license.requires_attribution,
                 },
                 source: CatalogSource {
@@ -339,6 +350,14 @@ fn build_catalog(seed: SeedFile, fetched: BTreeMap<String, LfsPointer>) -> Catal
         models,
         advisories,
     }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        s.push_str(&format!("{byte:02x}"));
+    }
+    s
 }
 
 /// We don't want to pull in chrono just for this; format current UTC time
@@ -409,7 +428,34 @@ fn run_catalog_fetch(
         fetched.insert(model.id.clone(), lfs);
     }
 
-    let catalog = build_catalog(seed, fetched);
+    // Hash each unique license URL once. Empty `sha256` in the seed (or a
+    // missing field) means "fetch and hash the body of url".
+    let mut license_hashes: BTreeMap<String, String> = BTreeMap::new();
+    for model in &seed.models {
+        if model.license.sha256.is_some() {
+            continue;
+        }
+        let url = &model.license.url;
+        if license_hashes.contains_key(url) {
+            continue;
+        }
+        eprintln!("→ fetching license text from {url}");
+        let resp = client
+            .get(url)
+            .send()
+            .and_then(|r| r.error_for_status())
+            .with_context(|| format!("GET {url}"))?;
+        let bytes = resp
+            .bytes()
+            .with_context(|| format!("read body of {url}"))?;
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let hex = hex_encode(&hasher.finalize());
+        eprintln!("  sha256={hex} ({} bytes)", bytes.len());
+        license_hashes.insert(url.clone(), hex);
+    }
+
+    let catalog = build_catalog(seed, fetched, license_hashes);
     let json = serde_json::to_string_pretty(&catalog)? + "\n";
     if let Some(parent) = out_path.parent() {
         fs::create_dir_all(parent)?;

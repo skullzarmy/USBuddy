@@ -195,11 +195,7 @@ fn full_drive_lifecycle() {
         // the atomic rename + current.json swap behaviour.
         let staged = drive.join("versions").join("0.2.0.tmp");
         fs::create_dir_all(&staged).unwrap();
-        fs::write(
-            staged.join("version.json"),
-            manifest_payload_for_fallback(),
-        )
-        .unwrap();
+        fs::write(staged.join("version.json"), manifest_payload_for_fallback()).unwrap();
     } else {
         let _ = require_json(&stage_out);
     }
