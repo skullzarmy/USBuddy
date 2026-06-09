@@ -17,9 +17,15 @@ model parameters all live on the drive.
 
 ## Quickstart
 
-> **Status note.** USBuddy is pre-release. There are **no published binaries
-> yet**. Today you build everything from source. Three installer surfaces
-> live in this repo — pick whichever you prefer:
+> **Status note.** USBuddy is pre-release. No tagged release has been cut
+> yet, but the [`release.yml`](./.github/workflows/release.yml) workflow
+> is wired to produce signed, attested archives for macOS / Linux /
+> Windows containing all four binaries (`usbuddy-installer-cli`,
+> `usbuddy-installer-tui`, `usbuddy-installer-gui`, `usbuddy-runtime`)
+> plus the built web UI, launcher shims, and a starter `catalog.json`. A
+> maintainer triggers it from the Actions tab with a semver version when
+> a build is ready. Until then, you build everything from source — three
+> installer surfaces live in this repo, pick whichever you prefer:
 >
 > - `usbuddy-installer-cli` — scriptable, the workhorse
 > - `usbuddy-installer-tui` — interactive ratatui menu (SSH-friendly)

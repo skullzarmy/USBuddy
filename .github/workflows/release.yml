@@ -53,17 +53,25 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            archive: usbuddy-installer-windows-x64.zip
+            archive: usbuddy-windows-x64.zip
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            archive: usbuddy-installer-linux-x64.tar.gz
+            archive: usbuddy-linux-x64.tar.gz
           - os: macos-latest
             target: universal2-apple-darwin
-            archive: usbuddy-installer-macos-universal.tar.gz
+            archive: usbuddy-macos-universal.tar.gz
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Install Linux GUI deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libgl1-mesa-dev libssl-dev pkg-config
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -76,18 +84,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist/${{ matrix.target }}
-          cp -R ui/web/dist dist/${{ matrix.target }}/ui
-          cp README.md NOTICE LICENSE dist/${{ matrix.target }}/
+          stage="dist/${{ matrix.target }}"
+          mkdir -p "$stage/bin"
+          cp -R ui/web/dist "$stage/ui"
+          cp README.md NOTICE LICENSE "$stage/"
+          cp fixtures/catalog/official.catalog.json "$stage/catalog.json"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp target/release/usbuddy-installer-cli.exe dist/${{ matrix.target }}/
-            powershell -Command "Compress-Archive -Path dist/${{ matrix.target }}\* -DestinationPath ${{ matrix.archive }}"
-          elif [[ "${{ runner.os }}" == "macOS" ]]; then
-            cp target/release/usbuddy-installer-cli dist/${{ matrix.target }}/
-            tar -czf ${{ matrix.archive }} -C dist/${{ matrix.target }} .
+            for bin in usbuddy-installer-cli usbuddy-installer-tui usbuddy-installer-gui usbuddy-runtime; do
+              cp "target/release/${bin}.exe" "$stage/bin/"
+            done
+            # Drive-side launcher shims, copied to archive root for convenience.
+            cp launch-windows.bat "$stage/"
+            powershell -Command "Compress-Archive -Path $stage\* -DestinationPath ${{ matrix.archive }}"
           else
-            cp target/release/usbuddy-installer-cli dist/${{ matrix.target }}/
-            tar -czf ${{ matrix.archive }} -C dist/${{ matrix.target }} .
+            for bin in usbuddy-installer-cli usbuddy-installer-tui usbuddy-installer-gui usbuddy-runtime; do
+              cp "target/release/${bin}" "$stage/bin/"
+            done
+            if [[ "${{ runner.os }}" == "macOS" ]]; then
+              cp launch-macos.command "$stage/"
+            else
+              cp launch-linux.sh "$stage/"
+            fi
+            tar -czf ${{ matrix.archive }} -C "$stage" .
           fi
       - name: Checksum asset
         shell: bash
