@@ -22,7 +22,8 @@ use usbuddy_core::{
     compiled_version,
     download::download_verified,
     engine::{
-        DEFAULT_LLAMA_TAG, EngineSelection, EngineStatus, EngineTarget, install_engines,
+        DEFAULT_LLAMA_TAG, DEFAULT_RUNTIME_RELEASE_BASE, EngineSelection, EngineStatus,
+        EngineTarget, install_engines, install_runtimes_from_release,
         report_status as engine_report_status,
     },
     layout::DriveLayout,
@@ -77,6 +78,18 @@ impl CatalogSource {
     }
 }
 
+#[derive(Default)]
+struct Readiness {
+    drive_ok: bool,
+    engine_ok: bool,
+    runtime_ok: bool,
+    models_ok: bool,
+    model_count: usize,
+    missing: Vec<String>,
+    drive_root: Option<PathBuf>,
+    runtime_path: Option<PathBuf>,
+}
+
 struct App {
     // Inputs
     drive: String,
@@ -91,6 +104,10 @@ struct App {
     engines: Vec<EngineStatus>,
     memory: MemorySnapshot,
     show_settings: bool,
+
+    // Runtime process management
+    runtime_child: Option<std::process::Child>,
+    runtime_url: Option<String>,
 
     // Log + worker
     output: Vec<String>,
@@ -116,6 +133,8 @@ impl App {
             engines: Vec::new(),
             memory,
             show_settings: false,
+            runtime_child: None,
+            runtime_url: None,
             output: vec![format!(
                 "USBuddy installer (GUI) {} — {}/{} • {:.1} GiB RAM available",
                 compiled_version(),
@@ -508,6 +527,48 @@ impl App {
         }
         self.log(format!("✓ Installed runtime: {}", dest.display()));
     }
+
+    fn action_install_runtimes_from_release(&mut self, selection: EngineSelection) {
+        let Some(layout) = self.layout().cloned() else {
+            self.log("[error] pick a drive first");
+            return;
+        };
+        let Ok(current) = layout.read_current() else {
+            self.log("[error] drive is not initialised — click \"Initialise drive\" first");
+            return;
+        };
+        let base = DEFAULT_RUNTIME_RELEASE_BASE.to_string();
+        let label = match &selection {
+            EngineSelection::AllPlatforms => {
+                "Fetching runtimes for ALL platforms from latest release".to_string()
+            }
+            EngineSelection::CurrentHost => {
+                "Fetching runtime for current host from latest release".to_string()
+            }
+            EngineSelection::Named(t) => {
+                format!("Fetching runtime for {} from latest release", t.dir_name())
+            }
+        };
+        let drive_root = layout.root().to_path_buf();
+        let active = current.active.clone();
+        self.spawn_blocking(&label, move |tx| {
+            let layout = DriveLayout::new(drive_root);
+            let log_tx = tx.clone();
+            match install_runtimes_from_release(&layout, &active, &selection, &base, move |line| {
+                let _ = log_tx.send(Job::Log(line));
+            }) {
+                Ok(_) => {
+                    let _ = tx.send(Job::EngineStatus(engine_report_status(&layout, &active)));
+                    let _ = tx.send(Job::Log("✓ Runtime install (from release) complete".into()));
+                }
+                Err(error) => {
+                    let _ = tx.send(Job::Log(format!(
+                        "[error] runtime install from release: {error}"
+                    )));
+                }
+            }
+        });
+    }
 }
 
 // --------------------------------------------------------------------
@@ -591,6 +652,8 @@ impl App {
     fn render_main(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
+                self.render_launch_card(ui);
+                ui.add_space(8.0);
                 self.render_drive_card(ui);
                 ui.add_space(8.0);
                 self.render_engine_card(ui);
@@ -602,6 +665,255 @@ impl App {
         });
     }
 
+    fn readiness(&self) -> Readiness {
+        let mut r = Readiness::default();
+        let Some(layout) = self.layout() else {
+            r.missing.push("Drive not picked".into());
+            return r;
+        };
+        let Ok(current) = layout.read_current() else {
+            r.missing.push("Drive not initialised (click Initialise)".into());
+            return r;
+        };
+        r.drive_ok = true;
+        let host = EngineTarget::current_host();
+        let host_engine = host
+            .and_then(|h| self.engines.iter().find(|s| s.target == h))
+            .map(|s| s.installed)
+            .unwrap_or(false);
+        if host_engine {
+            r.engine_ok = true;
+        } else {
+            r.missing
+                .push("Engine for this host not installed (Engine card)".into());
+        }
+        let host_arch_dir = host.map(|h| h.dir_name());
+        let runtime_path = host_arch_dir.as_ref().map(|d| {
+            layout
+                .version_dir(&current.active)
+                .join("bin")
+                .join(d)
+                .join(if cfg!(windows) {
+                    "usbuddy-runtime.exe"
+                } else {
+                    "usbuddy-runtime"
+                })
+        });
+        if let Some(p) = runtime_path.as_ref() {
+            if p.exists() {
+                r.runtime_ok = true;
+                r.runtime_path = Some(p.clone());
+            } else {
+                r.missing
+                    .push("USBuddy runtime for this host not installed (Engine card)".into());
+            }
+        }
+        let models = std::fs::read_dir(layout.models_dir())
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| {
+                        e.file_name()
+                            .to_str()
+                            .map(|n| n.ends_with(".gguf"))
+                            .unwrap_or(false)
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        if models > 0 {
+            r.models_ok = true;
+            r.model_count = models;
+        } else {
+            r.missing
+                .push("No models downloaded yet (Models card)".into());
+        }
+        r.drive_root = Some(layout.root().to_path_buf());
+        r
+    }
+
+    fn render_launch_card(&mut self, ui: &mut egui::Ui) {
+        let ready = self.readiness();
+        let running = self.runtime_alive();
+        card(ui, "▶ Launch USBuddy", |ui| {
+            if running {
+                ui.horizontal(|ui| {
+                    ui.colored_label(egui::Color32::from_rgb(0x4c, 0xaf, 0x50), "● USBuddy is running");
+                    ui.label(
+                        egui::RichText::new("http://127.0.0.1:8765")
+                            .monospace()
+                            .weak(),
+                    );
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("🌐  Open chat in browser")
+                                    .size(15.0)
+                                    .strong(),
+                            )
+                            .min_size(egui::vec2(220.0, 32.0)),
+                        )
+                        .clicked()
+                    {
+                        self.action_open_browser();
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("■  Stop USBuddy").size(15.0),
+                            )
+                            .min_size(egui::vec2(140.0, 32.0))
+                            .fill(egui::Color32::from_rgb(0x6b, 0x1f, 0x1f)),
+                        )
+                        .clicked()
+                    {
+                        self.action_stop_runtime();
+                    }
+                });
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Quitting this installer will also stop the USBuddy runtime.",
+                    )
+                    .small()
+                    .weak(),
+                );
+                return;
+            }
+
+            let all_ready =
+                ready.drive_ok && ready.engine_ok && ready.runtime_ok && ready.models_ok;
+            if all_ready {
+                ui.horizontal(|ui| {
+                    ui.colored_label(egui::Color32::from_rgb(0x4c, 0xaf, 0x50), "● Ready");
+                    ui.label(format!(
+                        "{} model(s) installed. Click below to start USBuddy and open the chat UI in your browser.",
+                        ready.model_count
+                    ));
+                });
+                ui.add_space(6.0);
+                let launch_btn = egui::Button::new(
+                    egui::RichText::new("🚀  Launch USBuddy (opens browser)")
+                        .size(16.0)
+                        .strong(),
+                )
+                .min_size(egui::vec2(280.0, 36.0));
+                if ui.add(launch_btn).clicked() {
+                    self.action_launch_runtime(
+                        ready.runtime_path.unwrap(),
+                        ready.drive_root.unwrap(),
+                    );
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Or eject the drive and double-click launch-macos.command / launch-linux.sh / launch-windows.bat on the host you want to use.",
+                    )
+                    .small()
+                    .weak(),
+                );
+            } else {
+                ui.colored_label(
+                    egui::Color32::from_rgb(0xff, 0xb3, 0x00),
+                    "● Not ready yet — finish the steps below:",
+                );
+                for m in &ready.missing {
+                    ui.label(format!("  • {m}"));
+                }
+            }
+        });
+    }
+
+    fn action_launch_runtime(&mut self, runtime_path: PathBuf, drive_root: PathBuf) {
+        use std::process::Command;
+        if self.runtime_alive() {
+            self.log("• USBuddy is already running — opening browser");
+            self.action_open_browser();
+            return;
+        }
+        self.log(format!("▶ Launching: {}", runtime_path.display()));
+        let mut cmd = Command::new(&runtime_path);
+        cmd.arg("serve")
+            .arg("--drive")
+            .arg(&drive_root)
+            .arg("--open-browser");
+        match cmd.spawn() {
+            Ok(child) => {
+                let pid = child.id();
+                self.runtime_child = Some(child);
+                self.runtime_url = Some("http://127.0.0.1:8765".into());
+                self.log(format!(
+                    "✓ USBuddy runtime started (pid {pid}) — browser opening at http://127.0.0.1:8765. Quit this installer (or click Stop USBuddy) to shut it down."
+                ));
+            }
+            Err(e) => {
+                self.log(format!("[error] failed to launch runtime: {e}"));
+            }
+        }
+    }
+
+    fn runtime_alive(&mut self) -> bool {
+        let Some(child) = self.runtime_child.as_mut() else {
+            return false;
+        };
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                self.log(format!("• USBuddy runtime exited ({status})"));
+                self.runtime_child = None;
+                self.runtime_url = None;
+                false
+            }
+            Ok(None) => true,
+            Err(e) => {
+                self.log(format!("[warn] runtime status check failed: {e}"));
+                true
+            }
+        }
+    }
+
+    fn action_open_browser(&mut self) {
+        let Some(url) = self.runtime_url.clone() else {
+            self.log("[error] runtime is not running");
+            return;
+        };
+        let result = if cfg!(target_os = "macos") {
+            std::process::Command::new("open").arg(&url).spawn()
+        } else if cfg!(target_os = "windows") {
+            std::process::Command::new("cmd")
+                .args(["/C", "start", "", &url])
+                .spawn()
+        } else {
+            std::process::Command::new("xdg-open").arg(&url).spawn()
+        };
+        if let Err(e) = result {
+            self.log(format!("[error] could not open browser: {e}"));
+        }
+    }
+
+    fn action_stop_runtime(&mut self) {
+        let Some(mut child) = self.runtime_child.take() else {
+            return;
+        };
+        self.runtime_url = None;
+        self.log(format!("■ Stopping USBuddy runtime (pid {})…", child.id()));
+        let _ = child.kill();
+        let _ = child.wait();
+        self.log("✓ USBuddy runtime stopped");
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.runtime_child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl App {
     fn render_engine_card(&mut self, ui: &mut egui::Ui) {
         card(ui, "2. Engine (llama.cpp)", |ui| {
             if self.layout().is_none() {
@@ -650,34 +962,70 @@ impl App {
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 let busy = self.job_running;
+                let host_setup = egui::Button::new(
+                    egui::RichText::new("⚙  Set up THIS host (engine + runtime)")
+                        .strong(),
+                )
+                .min_size(egui::vec2(280.0, 32.0));
                 if ui
-                    .add_enabled(
-                        !busy && host.is_some(),
-                        egui::Button::new("⬇ Install for this host"),
-                    )
+                    .add_enabled(!busy && host.is_some(), host_setup)
                     .on_hover_text(format!(
-                        "Download llama.cpp {} for the platform you're on right now (~10–15 MB).",
+                        "One click: downloads llama.cpp {} for this host AND copies the USBuddy runtime onto the drive. This is the minimum to make chat work right now.",
                         DEFAULT_LLAMA_TAG
                     ))
                     .clicked()
                 {
                     self.action_install_engine(EngineSelection::CurrentHost);
-                }
-                if ui
-                    .add_enabled(!busy, egui::Button::new("⬇ Install for ALL platforms"))
-                    .on_hover_text("Download llama.cpp for macOS arm64/x64, Linux x64/arm64, Windows x64/arm64 (~60–90 MB total). Required for true portability.")
-                    .clicked()
-                {
-                    self.action_install_engine(EngineSelection::AllPlatforms);
-                }
-                if ui
-                    .add_enabled(!busy, egui::Button::new("Install runtime for this host"))
-                    .on_hover_text("Copy this build's usbuddy-runtime onto the drive at the correct per-platform path so the launcher scripts can find it.")
-                    .clicked()
-                {
                     self.action_install_runtime_host();
                     self.refresh_engine_status();
                 }
+                let portable_setup = egui::Button::new(
+                    "🌍  Make it fully portable (ALL 6 platforms)",
+                );
+                if ui
+                    .add_enabled(!busy, portable_setup)
+                    .on_hover_text("Downloads llama.cpp for all 6 platforms (~60–90 MB) AND attempts to fetch per-platform USBuddy runtimes from the latest GitHub release. Runtime fetch will 404 until a release is published — fall back to running \"Set up THIS host\" on each machine you plug the stick into.")
+                    .clicked()
+                {
+                    self.action_install_engine(EngineSelection::AllPlatforms);
+                    self.action_install_runtime_host();
+                    self.action_install_runtimes_from_release(EngineSelection::AllPlatforms);
+                }
+            });
+
+            ui.add_space(6.0);
+            ui.collapsing("Advanced (per-action buttons)", |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let busy = self.job_running;
+                    if ui
+                        .add_enabled(
+                            !busy && host.is_some(),
+                            egui::Button::new("Engine: this host only"),
+                        )
+                        .clicked()
+                    {
+                        self.action_install_engine(EngineSelection::CurrentHost);
+                    }
+                    if ui
+                        .add_enabled(!busy, egui::Button::new("Engine: ALL platforms"))
+                        .clicked()
+                    {
+                        self.action_install_engine(EngineSelection::AllPlatforms);
+                    }
+                    if ui
+                        .add_enabled(!busy, egui::Button::new("Runtime: copy local build"))
+                        .clicked()
+                    {
+                        self.action_install_runtime_host();
+                        self.refresh_engine_status();
+                    }
+                    if ui
+                        .add_enabled(!busy, egui::Button::new("Runtime: ALL from release"))
+                        .clicked()
+                    {
+                        self.action_install_runtimes_from_release(EngineSelection::AllPlatforms);
+                    }
+                });
             });
 
             ui.add_space(6.0);
