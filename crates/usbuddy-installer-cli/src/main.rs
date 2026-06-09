@@ -580,6 +580,9 @@ fn main() -> anyhow::Result<()> {
                         eprintln!("{line}");
                     },
                 )?;
+                layout.write_launchers().with_context(|| {
+                    format!("failed to write launchers to {}", layout.root().display())
+                })?;
                 print_json(&installed)?;
                 return Ok(());
             }
@@ -623,6 +626,12 @@ fn main() -> anyhow::Result<()> {
                 fs::set_permissions(&dest, perms)?;
             }
             eprintln!("✓ Installed runtime to {}", dest.display());
+            // Refresh the cross-platform launchers in case the drive was
+            // initialised by an older USBuddy that didn't write them, or the
+            // launcher contract has changed in this release.
+            layout.write_launchers().with_context(|| {
+                format!("failed to write launchers to {}", layout.root().display())
+            })?;
             print_json(
                 &serde_json::json!({ "runtime": dest, "platform": format!("{}-{arch}", platform.os) }),
             )?;

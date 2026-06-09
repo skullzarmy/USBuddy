@@ -14,6 +14,115 @@ use crate::{
 
 pub const CURRENT_SCHEMA_V1: u32 = 1;
 
+/// POSIX launcher (used for both `USBuddy.command` on macOS and `USBuddy.sh`
+/// on Linux). Detects OS+arch, locates `versions/<active>/bin/<os>-<arch>/usbuddy-runtime`,
+/// and exec's it with `--drive <self> --open-browser`. Fails loudly if the
+/// per-platform binary is missing so the user knows exactly what's wrong.
+const POSIX_LAUNCHER: &str = r#"#!/usr/bin/env bash
+# USBuddy portable launcher — runs the runtime that lives on this drive.
+# No installation required on the host; double-click or `./USBuddy.command`.
+set -e
+DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ ! -f "$DIR/current.json" ]; then
+  echo "USBuddy: $DIR/current.json not found. Is this a USBuddy drive?" >&2
+  exit 1
+fi
+ACTIVE="$(sed -n 's/.*"active"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DIR/current.json" | head -1)"
+if [ -z "$ACTIVE" ]; then
+  echo "USBuddy: could not read active version from current.json" >&2
+  exit 1
+fi
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+case "$OS" in
+  Darwin) OSDIR=macos ;;
+  Linux)  OSDIR=linux ;;
+  *) echo "USBuddy: unsupported OS '$OS'" >&2; exit 1 ;;
+esac
+case "$ARCH" in
+  x86_64|amd64) ARCHDIR=x64 ;;
+  arm64|aarch64) ARCHDIR=arm64 ;;
+  *) echo "USBuddy: unsupported arch '$ARCH'" >&2; exit 1 ;;
+esac
+BIN="$DIR/versions/$ACTIVE/bin/${OSDIR}-${ARCHDIR}/usbuddy-runtime"
+if [ ! -x "$BIN" ]; then
+  echo "USBuddy: runtime not installed for ${OSDIR}-${ARCHDIR}."
+  echo "  Expected: $BIN"
+  echo
+  echo "  Fix with one of:"
+  echo "    • Run the USBuddy installer on this host (it will copy the runtime)."
+  echo "    • Fetch from a published release:"
+  echo "        usbuddy-installer-cli install-runtime \"$DIR\" \\"
+  echo "          --from-release --target ${OSDIR}-${ARCHDIR}"
+  # Keep the Terminal window open on macOS so the user can read the message.
+  if [ "$OSDIR" = "macos" ] && [ -t 0 ]; then
+    read -n 1 -s -r -p "Press any key to close…"
+    echo
+  fi
+  exit 1
+fi
+exec "$BIN" serve --drive "$DIR" --open-browser
+"#;
+
+/// Windows launcher. Reads the active version out of `current.json` with
+/// `findstr`, picks the matching `windows-x64` or `windows-arm64` runtime,
+/// and exec's it. Keeps the console open on error so the user sees why.
+const WINDOWS_LAUNCHER: &str = r#"@echo off
+setlocal EnableDelayedExpansion
+set "DIR=%~dp0"
+if "%DIR:~-1%"=="\" set "DIR=%DIR:~0,-1%"
+if not exist "%DIR%\current.json" (
+  echo USBuddy: %DIR%\current.json not found. Is this a USBuddy drive?
+  pause
+  exit /b 1
+)
+set "ACTIVE="
+for /f "tokens=2 delims=:," %%a in ('findstr /c:"\"active\"" "%DIR%\current.json"') do (
+  set "RAW=%%a"
+)
+set "RAW=%RAW: =%"
+set "RAW=%RAW:"=%"
+set "ACTIVE=%RAW%"
+if "%ACTIVE%"=="" (
+  echo USBuddy: could not read active version from current.json
+  pause
+  exit /b 1
+)
+set "ARCHDIR=x64"
+if /I "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "ARCHDIR=arm64"
+if /I "%PROCESSOR_ARCHITEW6432%"=="ARM64" set "ARCHDIR=arm64"
+set "BIN=%DIR%\versions\%ACTIVE%\bin\windows-%ARCHDIR%\usbuddy-runtime.exe"
+if not exist "%BIN%" (
+  echo USBuddy: runtime not installed for windows-%ARCHDIR%.
+  echo   Expected: %BIN%
+  echo.
+  echo   Fix with one of:
+  echo     - Run the USBuddy installer on this host ^(it will copy the runtime^).
+  echo     - Fetch from a published release:
+  echo         usbuddy-installer-cli install-runtime "%DIR%" ^^
+  echo           --from-release --target windows-%ARCHDIR%
+  pause
+  exit /b 1
+)
+"%BIN%" serve --drive "%DIR%" --open-browser
+endlocal
+"#;
+
+const DRIVE_README: &str = "USBuddy portable runtime root.\n\
+\n\
+To start USBuddy, double-click the launcher for your platform at this drive's root:\n\
+  • macOS:   USBuddy.command\n\
+  • Linux:   USBuddy.sh\n\
+  • Windows: USBuddy.bat\n\
+\n\
+The launcher runs the USBuddy runtime that lives on this drive and opens the chat UI\n\
+in your default browser. Keep the drive inserted while USBuddy is running.\n\
+\n\
+If the launcher reports the runtime is not installed for your platform, run the\n\
+USBuddy installer on this host once (it will copy the runtime onto the drive), or\n\
+fetch all platforms ahead of time with `usbuddy-installer-cli install-runtime\n\
+<drive> --from-release --target all`.\n";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CurrentVersionPointer {
     pub schema: u32,
@@ -122,17 +231,45 @@ impl DriveLayout {
             }
             .write_to(&self.license_prefs_path())?;
         }
-        if !self.root.join("README.txt").exists() {
-            fs::write(
-                self.root.join("README.txt"),
-                "USBuddy portable runtime root. Launch from the platform launcher and keep this drive inserted while the runtime is active.\n",
-            )?;
-        }
+        // Always (re)write the README so guidance stays in sync with the launchers.
+        fs::write(self.root.join("README.txt"), DRIVE_README)?;
         self.write_current(&CurrentVersionPointer {
             schema: CURRENT_SCHEMA_V1,
             active: active_version.into(),
             previous: None,
         })?;
+        // Drop in the cross-platform launchers so the stick is double-clickable
+        // on any host the moment it's initialised — even before a runtime is
+        // installed for that platform (the launcher tells the user how to fix it).
+        self.write_launchers()?;
+        Ok(())
+    }
+
+    /// Write `USBuddy.command` (mac), `USBuddy.sh` (linux), and `USBuddy.bat`
+    /// (windows) to the drive root. Idempotent — overwrites in place so the
+    /// scripts stay current with newer USBuddy versions. The POSIX scripts get
+    /// mode `0755` on Unix hosts (no-op on Windows / FAT-style filesystems
+    /// that ignore exec bits — the launcher will still run via `bash` and the
+    /// Finder treats `.command` as executable regardless).
+    pub fn write_launchers(&self) -> Result<()> {
+        fs::create_dir_all(&self.root)?;
+        let mac = self.root.join("USBuddy.command");
+        let sh = self.root.join("USBuddy.sh");
+        let bat = self.root.join("USBuddy.bat");
+        fs::write(&mac, POSIX_LAUNCHER)?;
+        fs::write(&sh, POSIX_LAUNCHER)?;
+        fs::write(&bat, WINDOWS_LAUNCHER)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for path in [&mac, &sh] {
+                if let Ok(meta) = fs::metadata(path) {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(0o755);
+                    let _ = fs::set_permissions(path, perms);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -237,5 +374,49 @@ mod tests {
         let rolled = layout.rollback().unwrap();
         assert_eq!(rolled.active, "0.0.9");
         assert_eq!(rolled.previous.as_deref(), Some("0.1.0"));
+    }
+
+    #[test]
+    fn initialize_drops_in_cross_platform_launchers() {
+        let dir = tempdir().unwrap();
+        let layout = DriveLayout::new(dir.path());
+        layout.initialize_structure("0.1.0").unwrap();
+
+        let mac = dir.path().join("USBuddy.command");
+        let sh = dir.path().join("USBuddy.sh");
+        let bat = dir.path().join("USBuddy.bat");
+        assert!(mac.exists(), "USBuddy.command must be written");
+        assert!(sh.exists(), "USBuddy.sh must be written");
+        assert!(bat.exists(), "USBuddy.bat must be written");
+
+        // Sanity-check launcher contents reference the runtime + serve flags
+        // so a future refactor that breaks the contract trips this test.
+        let mac_body = std::fs::read_to_string(&mac).unwrap();
+        assert!(mac_body.contains("usbuddy-runtime"));
+        assert!(mac_body.contains("--drive"));
+        assert!(mac_body.contains("--open-browser"));
+        let bat_body = std::fs::read_to_string(&bat).unwrap();
+        assert!(bat_body.contains("usbuddy-runtime.exe"));
+        assert!(bat_body.contains("--drive"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&mac).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+            assert_eq!(
+                std::fs::metadata(&sh).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+        }
+
+        // README should reference the new launcher entry points, not the old
+        // "Launch from the platform launcher" placeholder.
+        let readme = std::fs::read_to_string(dir.path().join("README.txt")).unwrap();
+        assert!(readme.contains("USBuddy.command"));
+        assert!(readme.contains("USBuddy.bat"));
+        assert!(readme.contains("USBuddy.sh"));
     }
 }
