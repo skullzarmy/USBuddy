@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/skullzarmy/USBuddy/schemas/catalog.schema.json",
+  "title": "USBuddy catalog v1",
+  "type": "object",
+  "required": ["schema", "runtime", "models", "advisories"],
+  "properties": {
+    "schema": { "const": "usbuddy.catalog/v1" },
+    "generated_at": { "type": "string" },
+    "source": { "type": "string" },
+    "runtime": {
+      "type": "object",
+      "required": ["min", "max"],
+      "properties": {
+        "min": { "type": "string" },
+        "max": { "type": "string" }
+      }
+    },
+    "models": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/model" }
+    },
+    "advisories": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/advisory" }
+    }
+  },
+  "$defs": {
+    "model": {
+      "type": "object",
+      "required": ["id", "family_id", "display_name", "version", "file_name", "sha256", "size_bytes", "prompt_template", "capabilities", "aliases", "profile", "license", "source"],
+      "properties": {
+        "id": { "type": "string" },
+        "family_id": { "type": "string" },
+        "display_name": { "type": "string" },
+        "version": { "type": "string" },
+        "file_name": { "type": "string" },
+        "sha256": { "type": "string", "minLength": 64, "maxLength": 64 },
+        "size_bytes": { "type": "integer", "minimum": 1 },
+        "prompt_template": { "type": "string" },
+        "capabilities": { "type": "array", "items": { "type": "string" } },
+        "aliases": { "type": "array", "items": { "type": "string" } },
+        "profile": { "type": "string" },
+        "license": { "$ref": "#/$defs/license" },
+        "source": { "$ref": "#/$defs/source" },
+        "auth": { "$ref": "#/$defs/auth" }
+      }
+    },
+    "license": {
+      "type": "object",
+      "required": ["spdx", "title", "url", "sha256", "requires_attribution"],
+      "properties": {
+        "spdx": { "type": "string" },
+        "title": { "type": "string" },
+        "url": { "type": "string" },
+        "sha256": { "type": "string", "minLength": 64, "maxLength": 64 },
+        "requires_attribution": { "type": "boolean" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["kind", "url"],
+      "properties": {
+        "kind": { "type": "string" },
+        "url": { "type": "string" }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "required": ["type", "gate_url"],
+      "properties": {
+        "type": { "type": "string" },
+        "gate_url": { "type": "string" }
+      }
+    },
+    "advisory": {
+      "type": "object",
+      "required": ["id", "severity", "summary", "recommended_action", "affects"],
+      "properties": {
+        "id": { "type": "string" },
+        "severity": { "type": "string" },
+        "summary": { "type": "string" },
+        "recommended_action": { "type": "string" },
+        "affects": {
+          "type": "object",
+          "properties": {
+            "models": { "type": "array", "items": { "type": "string" } },
+            "runtime_versions": { "type": "array", "items": { "type": "string" } },
+            "llama_server": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    }
+  }
+}

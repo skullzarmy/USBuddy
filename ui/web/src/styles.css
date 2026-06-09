@@ -1,0 +1,52 @@
+:root {
+  color-scheme: dark;
+  --bg: #09131f;
+  --panel: #132033;
+  --text: #f4f7fb;
+  --muted: #a7bbcf;
+  --accent: #62d4ff;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  background: radial-gradient(circle at top, #163050 0%, var(--bg) 60%);
+  color: var(--text);
+}
+
+.app-shell {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 3rem 1.5rem;
+}
+
+.eyebrow {
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.85rem;
+}
+
+.panel {
+  background: rgb(19 32 51 / 88%);
+  border: 1px solid rgb(98 212 255 / 18%);
+  border-radius: 18px;
+  padding: 1.25rem;
+  margin-top: 1.25rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+ul {
+  padding-left: 1rem;
+}
+
+li {
+  margin: 0.5rem 0;
+  color: var(--muted);
+}

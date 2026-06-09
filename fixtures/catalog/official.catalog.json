@@ -1,0 +1,52 @@
+{
+  "schema": "usbuddy.catalog/v1",
+  "generated_at": "2026-06-09T00:00:00Z",
+  "source": "repository",
+  "runtime": {
+    "min": "0.1.0",
+    "max": "0.1.99"
+  },
+  "models": [
+    {
+      "id": "llama-3.1-8b-instruct-q4_k_m",
+      "family_id": "llama-3.1-8b-instruct",
+      "display_name": "Llama 3.1 8B Instruct Q4_K_M",
+      "version": "1",
+      "file_name": "llama-3.1-8b-instruct-q4_k_m.gguf",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size_bytes": 4294967296,
+      "prompt_template": "llama3",
+      "capabilities": ["chat"],
+      "aliases": ["llama31-8b-q4"],
+      "profile": "aligned",
+      "license": {
+        "spdx": "LicenseRef-Llama-Community",
+        "title": "Llama Community License",
+        "url": "https://ai.meta.com/llama/license/",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "requires_attribution": true
+      },
+      "source": {
+        "kind": "official",
+        "url": "https://github.com/skullzarmy/USBuddy/blob/main/catalog.json"
+      },
+      "auth": {
+        "type": "hf_token",
+        "gate_url": "https://huggingface.co/meta-llama"
+      }
+    }
+  ],
+  "advisories": [
+    {
+      "id": "USB-2026-0001",
+      "severity": "medium",
+      "summary": "Sample advisory entry for integration tests.",
+      "recommended_action": "Upgrade to the latest runtime when available.",
+      "affects": {
+        "models": ["llama-3.1-8b-instruct-q4_k_m"],
+        "runtime_versions": ["0.1.0"],
+        "llama_server": []
+      }
+    }
+  ]
+}

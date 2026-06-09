@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>USBuddy</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header>
+        <p class="eyebrow">Offline-by-default portable runtime</p>
+        <h1>USBuddy</h1>
+        <p id="status">Loading runtime status…</p>
+      </header>
+
+      <section class="panel">
+        <h2>Installed models</h2>
+        <ul id="models"></ul>
+      </section>
+
+      <section class="panel grid">
+        <div>
+          <h2>Current version</h2>
+          <p id="version">—</p>
+        </div>
+        <div>
+          <h2>Catalog advisories</h2>
+          <ul id="advisories"></ul>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "@usbuddy/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Static chat surface for USBuddy runtime",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "lint": "node lint.mjs",
+    "test": "node test.mjs"
+  },
+  "license": "Apache-2.0"
+}
