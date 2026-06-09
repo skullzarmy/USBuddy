@@ -672,7 +672,8 @@ impl App {
             return r;
         };
         let Ok(current) = layout.read_current() else {
-            r.missing.push("Drive not initialised (click Initialise)".into());
+            r.missing
+                .push("Drive not initialised (click Initialise)".into());
             return r;
         };
         r.drive_ok = true;
@@ -737,7 +738,10 @@ impl App {
         card(ui, "▶ Launch USBuddy", |ui| {
             if running {
                 ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::from_rgb(0x4c, 0xaf, 0x50), "● USBuddy is running");
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0x4c, 0xaf, 0x50),
+                        "● USBuddy is running",
+                    );
                     ui.label(
                         egui::RichText::new("http://127.0.0.1:8765")
                             .monospace()
@@ -761,11 +765,9 @@ impl App {
                     }
                     if ui
                         .add(
-                            egui::Button::new(
-                                egui::RichText::new("■  Stop USBuddy").size(15.0),
-                            )
-                            .min_size(egui::vec2(140.0, 32.0))
-                            .fill(egui::Color32::from_rgb(0x6b, 0x1f, 0x1f)),
+                            egui::Button::new(egui::RichText::new("■  Stop USBuddy").size(15.0))
+                                .min_size(egui::vec2(140.0, 32.0))
+                                .fill(egui::Color32::from_rgb(0x6b, 0x1f, 0x1f)),
                         )
                         .clicked()
                     {

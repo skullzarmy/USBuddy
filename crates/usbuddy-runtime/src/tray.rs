@@ -48,12 +48,9 @@ pub fn run_tray(state: Arc<RuntimeState>, url: String) -> Result<()> {
     let open_item = MenuItem::new("Open USBuddy chat", true, None);
     let stop_item = MenuItem::new("Stop model (free RAM)", true, None);
     let quit_item = MenuItem::new("Quit USBuddy", true, None);
-    menu.append(&open_item)
-        .context("append Open menu item")?;
-    menu.append(&stop_item)
-        .context("append Stop menu item")?;
-    menu.append(&quit_item)
-        .context("append Quit menu item")?;
+    menu.append(&open_item).context("append Open menu item")?;
+    menu.append(&stop_item).context("append Stop menu item")?;
+    menu.append(&quit_item).context("append Quit menu item")?;
 
     let open_id = open_item.id().clone();
     let stop_id = stop_item.id().clone();
@@ -72,9 +69,7 @@ pub fn run_tray(state: Arc<RuntimeState>, url: String) -> Result<()> {
     let _tray = match tray_result {
         Ok(t) => t,
         Err(e) => {
-            eprintln!(
-                "USBuddy: tray icon unavailable ({e}). Server is still running at {url}."
-            );
+            eprintln!("USBuddy: tray icon unavailable ({e}). Server is still running at {url}.");
             eprintln!("        Use the web UI's Quit button or Ctrl-C in the terminal to stop.");
             // Park the main thread; the server lives on its background runtime.
             loop {
