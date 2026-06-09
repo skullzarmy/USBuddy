@@ -112,6 +112,12 @@ impl Catalog {
                     model.id
                 )));
             }
+            if aliases.contains(&model.id) {
+                return Err(UsbBuddyError::InvalidState(format!(
+                    "alias collision detected for '{}'",
+                    model.id
+                )));
+            }
             if model.family_id.trim().is_empty() {
                 return Err(UsbBuddyError::InvalidState(format!(
                     "model '{}' is missing family_id",
