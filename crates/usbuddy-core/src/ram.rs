@@ -1,6 +1,18 @@
 use serde::Serialize;
 use sysinfo::System;
 
+/// Estimated KV-cache memory cost per context token, in bytes.
+/// Derived from llama.cpp defaults: 128 KiB per token at full precision.
+pub const KV_BYTES_PER_TOKEN_DEFAULT: u64 = 131_072;
+
+/// Minimum host RAM headroom required to avoid the red band, in bytes (1 GiB).
+/// Below this threshold the OS risks swapping model weights to disk, which
+/// is the primary footprint-leak vector on all platforms.
+const RED_BAND_HEADROOM_BYTES: i64 = 1_073_741_824;
+
+/// Minimum host RAM headroom for a green band result, in bytes (3 GiB).
+const YELLOW_BAND_HEADROOM_BYTES: i64 = 3_221_225_472;
+
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct MemorySnapshot {
     pub total_bytes: u64,
@@ -53,9 +65,9 @@ pub fn assess_fit(snapshot: MemorySnapshot, input: RamEstimateInput) -> RamDecis
         remaining_bytes.max(0) as f64 / required_bytes as f64
     };
     let host_headroom_bytes = remaining_bytes;
-    let band = if remaining_bytes < 0 || host_headroom_bytes < 1_073_741_824 {
+    let band = if remaining_bytes < 0 || host_headroom_bytes < RED_BAND_HEADROOM_BYTES {
         FitBand::Red
-    } else if margin_ratio < 0.2 || host_headroom_bytes < 3_221_225_472 {
+    } else if margin_ratio < 0.2 || host_headroom_bytes < YELLOW_BAND_HEADROOM_BYTES {
         FitBand::Yellow
     } else {
         FitBand::Green

@@ -151,6 +151,7 @@ function selectModel(m) {
 
 function updateRamBadge(sizeBytes, contextTokens) {
   if (!sizeBytes || !state) { ramBadge.textContent = ''; return; }
+  // 131_072 bytes = 128 KiB per token (llama.cpp KV-cache default).
   const kv = contextTokens * 131_072;
   const overhead = 512 * 1024 * 1024;
   const required = sizeBytes + kv + overhead;
