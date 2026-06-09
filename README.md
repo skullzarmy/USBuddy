@@ -18,12 +18,17 @@ model parameters all live on the drive.
 ## Quickstart
 
 > **Status note.** USBuddy is pre-release. There are **no published binaries
-> yet** and the `egui` GUI / `ratatui` TUI installer surfaces are not built.
-> Today you drive everything from source via the CLI (`usbuddy-installer-cli`)
-> and the runtime (`usbuddy-runtime`). The launcher scripts at the repo root
-> (`launch-macos.command`, `launch-windows.bat`, `launch-linux.sh`) are the
-> shims that ship to the **USB drive itself** — they are not how you start
-> development.
+> yet**. Today you build everything from source. Three installer surfaces
+> live in this repo — pick whichever you prefer:
+>
+> - `usbuddy-installer-cli` — scriptable, the workhorse
+> - `usbuddy-installer-tui` — interactive ratatui menu (SSH-friendly)
+> - `usbuddy-installer-gui` — eframe/egui desktop app
+>
+> All three call into the same `usbuddy-core` library. The launcher
+> scripts at the repo root (`launch-macos.command`, `launch-windows.bat`,
+> `launch-linux.sh`) are shims that ship to the **USB drive itself** —
+> they are not how you start development.
 
 ### Prerequisites
 
@@ -43,12 +48,14 @@ cd USBuddy
 cargo build --release --workspace
 ```
 
-The two binaries you'll use land in `target/release/`:
+The binaries land in `target/release/`:
 
-- `usbuddy-installer-cli` — sets up a drive, refreshes the catalog, downloads
-  models, stages/activates runtime updates.
-- `usbuddy-runtime` — the localhost HTTP server + chat UI that runs from the
-  drive.
+| Binary | Purpose |
+| --- | --- |
+| `usbuddy-installer-cli` | Scriptable installer — drive init, catalog refresh, model download, update stage/activate/rollback, license prefs, ram-assess. |
+| `usbuddy-installer-tui` | Interactive ratatui shell over the same actions; runs over SSH. |
+| `usbuddy-installer-gui` | Desktop egui app with the same actions. |
+| `usbuddy-runtime` | Localhost HTTP server + chat UI that runs from the drive. |
 
 ### 2. Initialise a drive
 
@@ -61,8 +68,7 @@ DRIVE=/tmp/usbuddy-dev
 # Lay down the shadow-tree, current.json, .usbuddy/, models/, etc.
 cargo run -p usbuddy-installer-cli -- drive init "$DRIVE" 0.1.0
 
-# Seed it with the sample catalog (in real use, `catalog refresh` fetches
-# the published one from GitHub Releases).
+# Seed it with the curated catalog (real SHA256s pulled from upstream LFS).
 cp fixtures/catalog/official.catalog.json "$DRIVE/catalog.json"
 
 # Inspect to confirm.
@@ -72,15 +78,16 @@ cargo run -p usbuddy-installer-cli -- drive inspect "$DRIVE"
 ### 3. Add a model
 
 Either drop any `.gguf` file into `"$DRIVE/models/"` (it will be discovered
-as a `community-unverified` drop-in), or use the catalog flow once you have
-real entries with valid SHA256s:
+as a `community-unverified` drop-in), or use the catalog flow:
 
 ```sh
-cargo run -p usbuddy-installer-cli -- model download "$DRIVE" <model_id>
+cargo run -p usbuddy-installer-cli -- model download "$DRIVE" qwen2.5-7b-instruct-q4_k_m
 ```
 
-> The sample catalog in `fixtures/catalog/` uses placeholder hashes and won't
-> verify. Drop-in is the easiest path until the official catalog is populated.
+The shipped catalog contains five entries spanning the four content profiles
+(see [Content profiles](#content-profiles-replaces-uncensored-branding)):
+Qwen 2.5 7B Instruct, Mistral 7B Instruct v0.3, Llama 3.1 8B Instruct
+(gated — needs an HF token), Qwen 2.5 Coder 7B Instruct, and Dolphin 2.9.4.
 
 ### 4. Run the runtime
 
@@ -90,7 +97,18 @@ cargo run -p usbuddy-runtime -- serve --drive "$DRIVE" --open-browser
 
 This serves the chat UI on <http://127.0.0.1:8765> and opens your default
 browser. The runtime will spawn `llama-server` on port 8766 when you pick a
-model and hit launch.
+model and hit launch. After 5 min of inactivity it SIGTERMs `llama-server`
+so weights leave mlocked RAM (override with `--idle-timeout-secs 0`).
+
+### Or: drive everything from the TUI / GUI
+
+```sh
+# Interactive terminal wizard
+cargo run -p usbuddy-installer-tui -- --drive "$DRIVE"
+
+# Desktop app
+cargo run -p usbuddy-installer-gui -- --drive "$DRIVE"
+```
 
 ### Other useful CLI commands
 
@@ -114,6 +132,21 @@ npm --prefix ui/web install
 npm --prefix ui/web run lint
 npm --prefix ui/web run test
 npm --prefix ui/web run build
+```
+
+### Catalog maintenance (project maintainers)
+
+The shipped `fixtures/catalog/official.catalog.json` is regenerated from
+`fixtures/catalog/seed.toml` by the `xtask` crate, which fetches each
+entry's SHA256 + size from Hugging Face's LFS pointer endpoint — **no
+model bytes are downloaded**. Add a model to `seed.toml`, then:
+
+```sh
+# Public models:
+cargo run -p xtask -- catalog-fetch
+
+# Gated models (e.g. Llama family):
+HF_TOKEN=hf_xxx cargo run -p xtask -- catalog-fetch
 ```
 
 ### Validating a full change
@@ -624,20 +657,22 @@ Cached with `Swatinem/rust-cache@v2`.
 | --- | --- |
 | `usbuddy-core` — catalog, layout, RAM-fit, hash, license, atomic writes | ✅ |
 | `usbuddy-installer-cli` — drive init/inspect/rollback, catalog validate/refresh, model download/remove, update check/stage/activate | ✅ |
-| `usbuddy-runtime` — localhost HTTP server, llama-server spawn/kill, chat reverse-proxy, static SPA | ✅ |
+| `usbuddy-installer-tui` — ratatui interactive shell over the core | ✅ |
+| `usbuddy-installer-gui` — eframe/egui desktop shell over the core | ✅ |
+| `usbuddy-runtime` — localhost HTTP server, llama-server spawn/kill, chat reverse-proxy, static SPA, idle-unload (5-min default) | ✅ |
 | Chat UI — model picker, RAM-fit indicators, context-length slider, chat interface | ✅ |
-| CI — `ci.yml` (lint/test/build/audit matrix), `release.yml` (workflow_dispatch, SBOM, SLSA) | ✅ |
-| `catalog-validate.yml` — validates catalog on PR | ✅ |
+| `xtask catalog-fetch` — populates `official.catalog.json` from HF LFS pointers (no model bytes downloaded) | ✅ |
+| `fixtures/catalog/official.catalog.json` — 5 curated models across aligned / minimally-aligned / code / gated profiles, real upstream SHA256s | ✅ |
+| CI — `ci.yml` (lint/test/build/audit matrix), `release.yml` (workflow_dispatch, SBOM, SLSA), `catalog-validate.yml`, `footprint.yml` snapshot-diff | ✅ |
+| E2E install test — full installer-cli lifecycle (init → catalog → drop-in → license → update stage/activate/rollback) | ✅ |
 | Launcher scripts — `launch-linux.sh`, `launch-macos.command`, `launch-windows.bat` | ✅ |
 | JSON schemas — `catalog.schema.json`, `release-manifest.schema.json` | ✅ |
 
 ### Open (implementation work, not architecture)
 - Empirical tuning of RAM-fit threshold constants on real hardware
-- Populate `fixtures/catalog/official.catalog.json` with real model entries and verified SHA256 hashes
-- `egui` GUI and `ratatui` TUI shells over the CLI core
-- `footprint.yml` snapshot-diff regression workflow
-- E2E install test on real USB-like volumes
-- Idle model unload (5-min threshold) in the runtime wrapper
+- Populate the catalog with a wider curated model set (the 5 shipped today are a starting point)
+- Validate license `sha256` fields in the catalog against upstream license texts (currently zero-placeholders)
+- Windows / macOS snapshot-diff runners for `footprint.yml`
 
 ## License
 

@@ -1,0 +1,120 @@
+name: footprint
+
+# Snapshot-diff regression for USBuddy's footprint posture.
+#
+# What this does:
+#   1. Build usbuddy-runtime + usbuddy-installer-cli for Linux.
+#   2. Spin up a fresh Ubuntu container; snapshot $HOME, /tmp and
+#      /var/log file paths before and after running:
+#        a. installer-cli drive init on a tmp "USB" directory,
+#        b. runtime inspect (no model load, no llama-server spawn).
+#   3. Diff the snapshots and upload as an artifact. Any file the
+#      runtime touches OUTSIDE the drive directory or the system's
+#      normal logging is a footprint regression.
+#
+# Honest limitations:
+#   - This is the Linux story only. Windows Prefetch / macOS unified log /
+#     Spotlight indexing each need their own runner and tooling, deferred.
+#   - We don't run llama-server here (no model on hand); the runtime is
+#     exercised only through `inspect` + `serve --idle-timeout-secs 0`
+#     for a short window. A separate workflow that adds a small test
+#     model is a follow-up.
+#   - Process-level mlock / VirtualLock are not asserted by snapshot
+#     diff; they need /proc tracing. Out of scope here.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, off-hours. Footprint regressions are rare; nightly is overkill.
+    - cron: '0 7 * * 0'
+  pull_request:
+    paths:
+      - 'crates/usbuddy-runtime/**'
+      - 'crates/usbuddy-core/src/layout.rs'
+      - '.github/workflows/footprint.yml'
+
+jobs:
+  linux-snapshot:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build binaries
+        run: cargo build --release -p usbuddy-installer-cli -p usbuddy-runtime
+
+      - name: Prepare drive directory
+        run: |
+          mkdir -p "$RUNNER_TEMP/usbuddy-drive"
+          echo "DRIVE=$RUNNER_TEMP/usbuddy-drive" >>"$GITHUB_ENV"
+          echo "SNAP_BEFORE=$RUNNER_TEMP/snap-before.txt" >>"$GITHUB_ENV"
+          echo "SNAP_AFTER=$RUNNER_TEMP/snap-after.txt" >>"$GITHUB_ENV"
+          echo "SNAP_DIFF=$RUNNER_TEMP/footprint-diff.txt" >>"$GITHUB_ENV"
+
+      - name: Snapshot host (before)
+        run: |
+          # Capture mtime+path of every regular file outside the drive
+          # directory in HOME, /tmp, and the user's cache/state dirs.
+          # We exclude the drive path itself and anything inside it.
+          set -eu
+          find "$HOME" /tmp \
+            -path "$DRIVE" -prune -o \
+            -type f -printf '%T@ %p\n' 2>/dev/null \
+            | sort >"$SNAP_BEFORE" || true
+          wc -l "$SNAP_BEFORE"
+
+      - name: Exercise installer + runtime (no model)
+        run: |
+          set -eu
+          ./target/release/usbuddy-installer-cli drive init "$DRIVE" 0.1.0
+          cp fixtures/catalog/official.catalog.json "$DRIVE/catalog.json"
+          ./target/release/usbuddy-installer-cli drive inspect "$DRIVE"
+
+          # Boot the runtime briefly with idle-unload disabled and no
+          # browser open; it serves the static SPA and exits when killed.
+          ./target/release/usbuddy-runtime serve \
+              --drive "$DRIVE" \
+              --port 18765 \
+              --idle-timeout-secs 0 &
+          RUNTIME_PID=$!
+          sleep 3
+          # Hit status + index once.
+          curl --silent --fail "http://127.0.0.1:18765/api/status" >/dev/null
+          curl --silent --fail "http://127.0.0.1:18765/" >/dev/null
+          kill "$RUNTIME_PID" 2>/dev/null || true
+          wait "$RUNTIME_PID" 2>/dev/null || true
+
+      - name: Snapshot host (after)
+        run: |
+          set -eu
+          find "$HOME" /tmp \
+            -path "$DRIVE" -prune -o \
+            -type f -printf '%T@ %p\n' 2>/dev/null \
+            | sort >"$SNAP_AFTER" || true
+          wc -l "$SNAP_AFTER"
+
+      - name: Diff snapshots
+        run: |
+          set -eu
+          diff -u "$SNAP_BEFORE" "$SNAP_AFTER" >"$SNAP_DIFF" || true
+          echo "::group::Footprint diff"
+          # Filter to actual additions/changes (lines that begin with + but not +++)
+          grep -E '^\+[^+]' "$SNAP_DIFF" \
+            | grep -vE '/(.cache|.local/state)/' \
+            | sort -u || true
+          echo "::endgroup::"
+
+      - name: Upload snapshot artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: footprint-snapshots
+          path: |
+            ${{ env.SNAP_BEFORE }}
+            ${{ env.SNAP_AFTER }}
+            ${{ env.SNAP_DIFF }}
+          if-no-files-found: warn

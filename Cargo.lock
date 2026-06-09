@@ -4142,6 +4142,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "usbuddy-core",
 ]
@@ -5081,6 +5082,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

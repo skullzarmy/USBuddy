@@ -170,7 +170,10 @@ mod tests {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/catalog/official.catalog.json");
         let catalog = load_catalog(&root).unwrap();
-        assert_eq!(catalog.models.len(), 1);
-        assert_eq!(catalog.group_by_family().len(), 1);
+        assert!(
+            !catalog.models.is_empty(),
+            "fixture catalog should have at least one model"
+        );
+        assert!(!catalog.group_by_family().is_empty());
     }
 }

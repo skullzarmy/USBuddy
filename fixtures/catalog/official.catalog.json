@@ -1,6 +1,6 @@
 {
   "schema": "usbuddy.catalog/v1",
-  "generated_at": "2026-06-09T00:00:00Z",
+  "generated_at": "2026-06-09T04:26:57Z",
   "source": "repository",
   "runtime": {
     "min": "0.1.0",
@@ -8,45 +8,157 @@
   },
   "models": [
     {
+      "id": "qwen2.5-7b-instruct-q4_k_m",
+      "family_id": "qwen2.5-7b-instruct",
+      "display_name": "Qwen 2.5 7B Instruct Q4_K_M",
+      "version": "1",
+      "file_name": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+      "sha256": "65b8fcd92af6b4fefa935c625d1ac27ea29dcb6ee14589c55a8f115ceaaa1423",
+      "size_bytes": 4683074240,
+      "prompt_template": "chatml",
+      "capabilities": [
+        "chat",
+        "function_calling",
+        "json_mode",
+        "long_context"
+      ],
+      "aliases": [
+        "qwen25-7b-q4"
+      ],
+      "profile": "aligned",
+      "license": {
+        "spdx": "Apache-2.0",
+        "title": "Apache License 2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "requires_attribution": false
+      },
+      "source": {
+        "kind": "official",
+        "url": "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+      }
+    },
+    {
+      "id": "mistral-7b-instruct-v0.3-q4_k_m",
+      "family_id": "mistral-7b-instruct-v0.3",
+      "display_name": "Mistral 7B Instruct v0.3 Q4_K_M",
+      "version": "1",
+      "file_name": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+      "sha256": "1270d22c0fbb3d092fb725d4d96c457b7b687a5f5a715abe1e818da303e562b6",
+      "size_bytes": 4372812000,
+      "prompt_template": "mistral",
+      "capabilities": [
+        "chat",
+        "function_calling"
+      ],
+      "aliases": [
+        "mistral-7b-q4"
+      ],
+      "profile": "aligned",
+      "license": {
+        "spdx": "Apache-2.0",
+        "title": "Apache License 2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "requires_attribution": false
+      },
+      "source": {
+        "kind": "official",
+        "url": "https://huggingface.co/bartowski/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"
+      }
+    },
+    {
       "id": "llama-3.1-8b-instruct-q4_k_m",
       "family_id": "llama-3.1-8b-instruct",
       "display_name": "Llama 3.1 8B Instruct Q4_K_M",
       "version": "1",
-      "file_name": "llama-3.1-8b-instruct-q4_k_m.gguf",
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "size_bytes": 4294967296,
+      "file_name": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+      "sha256": "f2be3e1a239c12c9f3f01a962b11fb2807f8032fdb63b0a5502ea42ddef55e44",
+      "size_bytes": 4920739168,
       "prompt_template": "llama3",
-      "capabilities": ["chat"],
-      "aliases": ["llama31-8b-q4"],
+      "capabilities": [
+        "chat",
+        "function_calling",
+        "long_context"
+      ],
+      "aliases": [
+        "llama31-8b-q4"
+      ],
       "profile": "aligned",
       "license": {
         "spdx": "LicenseRef-Llama-Community",
         "title": "Llama Community License",
         "url": "https://ai.meta.com/llama/license/",
-        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
         "requires_attribution": true
       },
       "source": {
         "kind": "official",
-        "url": "https://github.com/skullzarmy/USBuddy/blob/main/catalog.json"
+        "url": "https://huggingface.co/lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
       },
       "auth": {
         "type": "hf_token",
-        "gate_url": "https://huggingface.co/meta-llama"
+        "gate_url": "https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct"
+      }
+    },
+    {
+      "id": "qwen2.5-coder-7b-instruct-q4_k_m",
+      "family_id": "qwen2.5-coder-7b-instruct",
+      "display_name": "Qwen 2.5 Coder 7B Instruct Q4_K_M",
+      "version": "1",
+      "file_name": "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+      "sha256": "1664fccab734674a50763490a8c6931b70e3f2f8ec10031b54806d30e5f956b6",
+      "size_bytes": 4683074336,
+      "prompt_template": "chatml",
+      "capabilities": [
+        "chat",
+        "code",
+        "long_context"
+      ],
+      "aliases": [
+        "qwen25-coder-7b-q4"
+      ],
+      "profile": "code",
+      "license": {
+        "spdx": "Apache-2.0",
+        "title": "Apache License 2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "requires_attribution": false
+      },
+      "source": {
+        "kind": "official",
+        "url": "https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf"
+      }
+    },
+    {
+      "id": "dolphin-2.9.4-llama3.1-8b-q4_k_m",
+      "family_id": "dolphin-2.9.4-llama3.1-8b",
+      "display_name": "Dolphin 2.9.4 (Llama 3.1 8B) Q4_K_M",
+      "version": "1",
+      "file_name": "dolphin-2.9.4-llama3.1-8b-Q4_K_M.gguf",
+      "sha256": "601e951c801c1d9140a89bf4f1acfc1ab34991e4ab18d9aaac8f09e3bab4001d",
+      "size_bytes": 4920746784,
+      "prompt_template": "chatml",
+      "capabilities": [
+        "chat"
+      ],
+      "aliases": [
+        "dolphin-llama31-8b-q4"
+      ],
+      "profile": "minimally-aligned",
+      "license": {
+        "spdx": "LicenseRef-Llama-Community",
+        "title": "Llama Community License",
+        "url": "https://ai.meta.com/llama/license/",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "requires_attribution": true
+      },
+      "source": {
+        "kind": "official",
+        "url": "https://huggingface.co/bartowski/dolphin-2.9.4-llama3.1-8b-GGUF/resolve/main/dolphin-2.9.4-llama3.1-8b-Q4_K_M.gguf"
       }
     }
   ],
-  "advisories": [
-    {
-      "id": "USB-2026-0001",
-      "severity": "medium",
-      "summary": "Sample advisory entry for integration tests.",
-      "recommended_action": "Upgrade to the latest runtime when available.",
-      "affects": {
-        "models": ["llama-3.1-8b-instruct-q4_k_m"],
-        "runtime_versions": ["0.1.0"],
-        "llama_server": []
-      }
-    }
-  ]
+  "advisories": []
 }
