@@ -47,7 +47,7 @@ pub fn download_verified(url: &str, dest: &Path, expected_sha256: Option<&str>) 
     let digest = encode_hex(hasher.finalize());
 
     if let Some(expected) = expected_sha256
-        && digest != expected
+        && !expected.eq_ignore_ascii_case(&digest)
     {
         return Err(UsbBuddyError::HashMismatch {
             expected: expected.to_string(),
