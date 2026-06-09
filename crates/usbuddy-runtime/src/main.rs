@@ -466,12 +466,23 @@ fn resolve_llama_server_bin(state: &RuntimeState) -> Result<PathBuf, AppError> {
         .read_current()
         .map_err(|e| AppError::internal(format!("cannot read current.json: {e}")))?;
     let platform = detect_platform();
+    let arch = match platform.arch.as_str() {
+        "x86_64" => "x64".to_string(),
+        "aarch64" => "arm64".to_string(),
+        other => other.to_string(),
+    };
     let bin_name = if cfg!(target_os = "windows") {
         "llama-server.exe"
     } else {
         "llama-server"
     };
     let candidates = [
+        state
+            .layout
+            .version_dir(&current.active)
+            .join("bin")
+            .join(format!("{}-{arch}", platform.os))
+            .join(bin_name),
         state
             .layout
             .version_dir(&current.active)
@@ -489,18 +500,14 @@ fn resolve_llama_server_bin(state: &RuntimeState) -> Result<PathBuf, AppError> {
             .version_dir(&current.active)
             .join("bin")
             .join(bin_name),
-        // Allow llama-server on PATH for development/testing.
-        PathBuf::from(bin_name),
     ];
-    candidates
-        .into_iter()
-        .find(|p| p.exists() || p.components().count() == 1)
-        .ok_or_else(|| {
-            AppError::internal(format!(
-                "llama-server binary not found for version {}",
-                current.active
-            ))
-        })
+    candidates.into_iter().find(|p| p.exists()).ok_or_else(|| {
+        AppError::internal(format!(
+            "llama-server not found on drive for version {} ({}-{arch}). \
+                 Provision it with `usbuddy-installer-cli engine install <drive>`.",
+            current.active, platform.os
+        ))
+    })
 }
 
 fn kill_llama_server(process: &Mutex<Option<Child>>) {

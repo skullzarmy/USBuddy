@@ -40,11 +40,15 @@ model parameters all live on the drive.
 
 - Rust toolchain (stable, edition 2024) — install via <https://rustup.rs>
 - Node.js 18+ (only if you want to build/lint/test the web UI)
-- A `llama-server` binary from [llama.cpp](https://github.com/ggml-org/llama.cpp)
-  on your `PATH` — required to actually launch a model. The runtime can boot
-  and serve the UI without it; you just can't chat until it's present.
 - A target directory to act as your "USB drive". Any folder works for
   development — a real exFAT-formatted USB is not required.
+
+> **`llama-server` is provisioned onto the drive, not the host.** USBuddy
+> ships an `engine install` command that downloads pinned
+> [llama.cpp](https://github.com/ggml-org/llama.cpp) release binaries for
+> macOS arm64/x64, Linux x64/arm64, and Windows x64/arm64 directly into
+> `versions/<v>/bin/<os>-<arch>/` on the drive. That's the whole point of
+> "portable" — the stick carries its own engine for every supported host.
 
 ### 1. Clone and build
 
@@ -81,7 +85,35 @@ cp fixtures/catalog/official.catalog.json "$DRIVE/catalog.json"
 cargo run -p usbuddy-installer-cli -- drive inspect "$DRIVE"
 ```
 
-### 3. Add a model
+### 3. Provision the engine and runtime onto the drive
+
+This is what makes the stick portable. Download `llama-server` for every
+platform you might plug into, and copy the USBuddy runtime onto the drive
+for the current host:
+
+```sh
+# Download llama.cpp release binaries for ALL six host platforms (~60–90 MB).
+cargo run -p usbuddy-installer-cli -- engine install "$DRIVE" --target all
+
+# Or just the platform you're sitting at right now.
+cargo run -p usbuddy-installer-cli -- engine install "$DRIVE" --target host
+
+# Copy this build's usbuddy-runtime into the drive's per-host bin dir.
+cargo run -p usbuddy-installer-cli -- install-runtime "$DRIVE"
+
+# See what's present on the drive.
+cargo run -p usbuddy-installer-cli -- engine status "$DRIVE"
+```
+
+> The GUI exposes the same flow under the "Engine (llama.cpp)" card —
+> click *Install for ALL platforms*, then *Install runtime for this host*.
+
+> ⚠️ `install-runtime` currently copies the **host's** USBuddy build. To
+> populate the drive with runtimes for other platforms, run `install-runtime`
+> on each host (or wait for a published USBuddy release that ships
+> cross-platform runtimes).
+
+### 4. Add a model
 
 Either drop any `.gguf` file into `"$DRIVE/models/"` (it will be discovered
 as a `community-unverified` drop-in), or use the catalog flow:
@@ -95,7 +127,7 @@ The shipped catalog contains five entries spanning the four content profiles
 Qwen 2.5 7B Instruct, Mistral 7B Instruct v0.3, Llama 3.1 8B Instruct
 (gated — needs an HF token), Qwen 2.5 Coder 7B Instruct, and Dolphin 2.9.4.
 
-### 4. Run the runtime
+### 5. Run the runtime
 
 ```sh
 cargo run -p usbuddy-runtime -- serve --drive "$DRIVE" --open-browser

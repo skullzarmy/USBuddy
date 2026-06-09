@@ -18,6 +18,11 @@ if not exist "%CURRENT%" (
     exit /b 1
 )
 
+:: Detect host arch (ARM64 vs x64).
+set "ARCH=x64"
+if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "ARCH=arm64"
+if /i "%PROCESSOR_ARCHITEW6432%"=="ARM64" set "ARCH=arm64"
+
 :: Read the "active" field using PowerShell.
 for /f "delims=" %%A in ('powershell -NoProfile -Command ^
     "(Get-Content -Raw '%CURRENT%' | ConvertFrom-Json).active"') do (
@@ -30,10 +35,20 @@ if "!ACTIVE!"=="" (
     exit /b 1
 )
 
-set "RUNTIME=%DRIVE_ROOT%\versions\!ACTIVE!\bin\windows-x64\usbuddy-runtime.exe"
+set "BIN_DIR=%DRIVE_ROOT%\versions\!ACTIVE!\bin\windows-!ARCH!"
+set "RUNTIME=!BIN_DIR!\usbuddy-runtime.exe"
+set "ENGINE=!BIN_DIR!\llama-server.exe"
 
 if not exist "!RUNTIME!" (
     echo USBuddy: runtime binary not found at !RUNTIME!
+    echo Run: usbuddy-installer-cli install-runtime "%DRIVE_ROOT%"
+    pause
+    exit /b 1
+)
+
+if not exist "!ENGINE!" (
+    echo USBuddy: llama-server engine not found at !ENGINE!
+    echo Provision engines with: usbuddy-installer-cli engine install "%DRIVE_ROOT%" all
     pause
     exit /b 1
 )

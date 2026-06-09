@@ -8,6 +8,9 @@ use usbuddy_core::{
     catalog::load_catalog,
     compiled_version,
     download::download_verified,
+    engine::{
+        DEFAULT_LLAMA_TAG, EngineSelection, install_engines, report_status as engine_report_status,
+    },
     layout::DriveLayout,
     license::{LicensePrefs, LicenseScope},
     platform::detect_platform,
@@ -54,6 +57,21 @@ enum Commands {
     Update {
         #[command(subcommand)]
         command: UpdateCommand,
+    },
+    /// Manage the drive-local llama.cpp inference engine.
+    Engine {
+        #[command(subcommand)]
+        command: EngineCommand,
+    },
+    /// Copy the locally-built usbuddy-runtime binary onto the drive for
+    /// the current host platform. Needed because there is no published
+    /// USBuddy release yet — once releases exist, prefer `update stage`.
+    InstallRuntime {
+        drive: PathBuf,
+        /// Path to the usbuddy-runtime binary to copy. Defaults to the
+        /// release-mode build from the current workspace.
+        #[arg(long)]
+        from: Option<PathBuf>,
     },
     RamAssess {
         available_gb: f64,
@@ -155,6 +173,26 @@ enum UpdateCommand {
     Activate { drive: PathBuf, version: String },
     /// Roll back to the previous runtime version.
     Rollback { drive: PathBuf },
+}
+
+#[derive(Debug, Subcommand)]
+enum EngineCommand {
+    /// Print install status for every supported engine target.
+    Status { drive: PathBuf },
+    /// Download and extract the llama.cpp inference engine onto the drive.
+    ///
+    /// `selection` is one of:
+    ///   * `all`               — provision every supported target (recommended).
+    ///   * `host`              — provision only the platform you're on right now.
+    ///   * `<os>-<arch>`       — e.g. `linux-x64`, `windows-arm64`, `macos-arm64`.
+    Install {
+        drive: PathBuf,
+        #[arg(default_value = "all")]
+        selection: String,
+        /// llama.cpp release tag to install (defaults to the version USBuddy ships against).
+        #[arg(long, default_value = DEFAULT_LLAMA_TAG)]
+        tag: String,
+    },
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -468,6 +506,80 @@ fn main() -> anyhow::Result<()> {
                 },
             );
             print_json(&decision)?;
+        }
+
+        Commands::Engine { command } => match command {
+            EngineCommand::Status { drive } => {
+                let layout = DriveLayout::new(drive);
+                let current = layout
+                    .read_current()
+                    .with_context(|| "drive is not initialised")?;
+                print_json(&engine_report_status(&layout, &current.active))?;
+            }
+            EngineCommand::Install {
+                drive,
+                selection,
+                tag,
+            } => {
+                let layout = DriveLayout::new(drive);
+                let current = layout
+                    .read_current()
+                    .with_context(|| "drive is not initialised")?;
+                let sel = EngineSelection::parse(&selection)?;
+                let installed = install_engines(&layout, &current.active, &sel, &tag, |line| {
+                    eprintln!("{line}");
+                })?;
+                print_json(&installed)?;
+            }
+        },
+
+        Commands::InstallRuntime { drive, from } => {
+            let layout = DriveLayout::new(drive);
+            let current = layout
+                .read_current()
+                .with_context(|| "drive is not initialised")?;
+            let platform = detect_platform();
+            let arch = match platform.arch.as_str() {
+                "x86_64" => "x64".to_string(),
+                "aarch64" => "arm64".to_string(),
+                other => other.to_string(),
+            };
+            let bin_name = if platform.os == "windows" {
+                "usbuddy-runtime.exe"
+            } else {
+                "usbuddy-runtime"
+            };
+            let source = from.unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .map(|workspace| workspace.join("target").join("release").join(bin_name))
+                    .unwrap_or_else(|| PathBuf::from(format!("target/release/{bin_name}")))
+            });
+            if !source.exists() {
+                anyhow::bail!(
+                    "runtime binary not found at {} — run `cargo build --release -p usbuddy-runtime` first or pass --from",
+                    source.display()
+                );
+            }
+            let dest_dir = layout
+                .version_dir(&current.active)
+                .join("bin")
+                .join(format!("{}-{arch}", platform.os));
+            fs::create_dir_all(&dest_dir)?;
+            let dest = dest_dir.join(bin_name);
+            fs::copy(&source, &dest)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&dest)?.permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(&dest, perms)?;
+            }
+            eprintln!("✓ Installed runtime to {}", dest.display());
+            print_json(
+                &serde_json::json!({ "runtime": dest, "platform": format!("{}-{arch}", platform.os) }),
+            )?;
         }
     }
     Ok(())

@@ -21,6 +21,10 @@ use usbuddy_core::{
     catalog::{Catalog, ModelEntry, load_catalog},
     compiled_version,
     download::download_verified,
+    engine::{
+        DEFAULT_LLAMA_TAG, EngineSelection, EngineStatus, EngineTarget, install_engines,
+        report_status as engine_report_status,
+    },
     layout::DriveLayout,
     license::{LicensePrefs, LicenseScope},
     platform::detect_platform,
@@ -51,6 +55,7 @@ struct Cli {
 enum Job {
     Log(String),
     CatalogLoaded(Box<Catalog>, &'static str),
+    EngineStatus(Vec<EngineStatus>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -83,6 +88,7 @@ struct App {
     layout_cache: Option<DriveLayout>,
     catalog: Option<Catalog>,
     catalog_source: CatalogSource,
+    engines: Vec<EngineStatus>,
     memory: MemorySnapshot,
     show_settings: bool,
 
@@ -107,6 +113,7 @@ impl App {
             layout_cache: None,
             catalog: None,
             catalog_source: CatalogSource::None,
+            engines: Vec::new(),
             memory,
             show_settings: false,
             output: vec![format!(
@@ -120,6 +127,7 @@ impl App {
             job_running: false,
         };
         me.refresh_layout();
+        me.refresh_engine_status();
         me.try_load_drive_catalog_silent();
         me
     }
@@ -212,6 +220,9 @@ impl App {
                         _ => CatalogSource::Drive,
                     };
                 }
+                Job::EngineStatus(status) => {
+                    self.engines = status;
+                }
             }
         }
         if done {
@@ -238,6 +249,7 @@ impl App {
             self.catalog = None;
             self.catalog_source = CatalogSource::None;
             self.try_load_drive_catalog_silent();
+            self.refresh_engine_status();
         }
     }
 
@@ -252,7 +264,10 @@ impl App {
             return;
         }
         match layout.initialize_structure(&version) {
-            Ok(()) => self.log(format!("✓ Drive initialised at version {version}")),
+            Ok(()) => {
+                self.log(format!("✓ Drive initialised at version {version}"));
+                self.refresh_engine_status();
+            }
             Err(error) => self.log(format!("[error] init: {error}")),
         }
     }
@@ -388,6 +403,111 @@ impl App {
             Err(error) => self.log(format!("[error] license: {error}")),
         }
     }
+
+    fn refresh_engine_status(&mut self) {
+        let Some(layout) = self.layout() else {
+            self.engines = Vec::new();
+            return;
+        };
+        let Ok(current) = layout.read_current() else {
+            self.engines = Vec::new();
+            return;
+        };
+        self.engines = engine_report_status(layout, &current.active);
+    }
+
+    fn action_install_engine(&mut self, selection: EngineSelection) {
+        let Some(layout) = self.layout().cloned() else {
+            self.log("[error] pick a drive first");
+            return;
+        };
+        let Ok(current) = layout.read_current() else {
+            self.log("[error] drive is not initialised — click \"Initialise drive\" first");
+            return;
+        };
+        let tag = DEFAULT_LLAMA_TAG.to_string();
+        let label = match &selection {
+            EngineSelection::AllPlatforms => "Installing engines for ALL platforms".to_string(),
+            EngineSelection::CurrentHost => "Installing engine for current host".to_string(),
+            EngineSelection::Named(t) => format!("Installing engine for {}", t.dir_name()),
+        };
+        let drive_root = layout.root().to_path_buf();
+        let active = current.active.clone();
+        self.spawn_blocking(&label, move |tx| {
+            let layout = DriveLayout::new(drive_root);
+            let log_tx = tx.clone();
+            match install_engines(&layout, &active, &selection, &tag, move |line| {
+                let _ = log_tx.send(Job::Log(line));
+            }) {
+                Ok(_installed) => {
+                    let _ = tx.send(Job::EngineStatus(engine_report_status(&layout, &active)));
+                    let _ = tx.send(Job::Log("✓ Engine install complete".into()));
+                }
+                Err(error) => {
+                    let _ = tx.send(Job::Log(format!("[error] engine install: {error}")));
+                }
+            }
+        });
+    }
+
+    fn action_install_runtime_host(&mut self) {
+        let Some(layout) = self.layout().cloned() else {
+            self.log("[error] pick a drive first");
+            return;
+        };
+        let Ok(current) = layout.read_current() else {
+            self.log("[error] drive is not initialised");
+            return;
+        };
+        let platform = detect_platform();
+        let arch = match platform.arch.as_str() {
+            "x86_64" => "x64".to_string(),
+            "aarch64" => "arm64".to_string(),
+            other => other.to_string(),
+        };
+        let bin_name = if platform.os == "windows" {
+            "usbuddy-runtime.exe"
+        } else {
+            "usbuddy-runtime"
+        };
+        let source = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join(bin_name)));
+        let Some(source) = source else {
+            self.log("[error] cannot locate sibling usbuddy-runtime binary");
+            return;
+        };
+        if !source.exists() {
+            self.log(format!(
+                "[error] runtime not found at {} — build it with `cargo build --release -p usbuddy-runtime` and relaunch this GUI",
+                source.display()
+            ));
+            return;
+        }
+        let dest_dir = layout
+            .version_dir(&current.active)
+            .join("bin")
+            .join(format!("{}-{arch}", platform.os));
+        if let Err(error) = std::fs::create_dir_all(&dest_dir) {
+            self.log(format!("[error] create {}: {error}", dest_dir.display()));
+            return;
+        }
+        let dest = dest_dir.join(bin_name);
+        if let Err(error) = std::fs::copy(&source, &dest) {
+            self.log(format!("[error] copy runtime: {error}"));
+            return;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(&dest) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o755);
+                let _ = std::fs::set_permissions(&dest, perms);
+            }
+        }
+        self.log(format!("✓ Installed runtime: {}", dest.display()));
+    }
 }
 
 // --------------------------------------------------------------------
@@ -473,10 +593,128 @@ impl App {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 self.render_drive_card(ui);
                 ui.add_space(8.0);
+                self.render_engine_card(ui);
+                ui.add_space(8.0);
                 self.render_catalog_card(ui);
                 ui.add_space(8.0);
                 self.render_models_card(ui);
             });
+        });
+    }
+
+    fn render_engine_card(&mut self, ui: &mut egui::Ui) {
+        card(ui, "2. Engine (llama.cpp)", |ui| {
+            if self.layout().is_none() {
+                ui.label(
+                    egui::RichText::new("Pick a drive above first.")
+                        .italics()
+                        .weak(),
+                );
+                return;
+            }
+            let host = EngineTarget::current_host();
+            let host_installed = host
+                .and_then(|h| self.engines.iter().find(|s| s.target == h))
+                .map(|s| s.installed)
+                .unwrap_or(false);
+            let any_installed = self.engines.iter().any(|s| s.installed);
+            let all_installed =
+                !self.engines.is_empty() && self.engines.iter().all(|s| s.installed);
+
+            ui.horizontal(|ui| {
+                let (color, msg) = if all_installed {
+                    (
+                        egui::Color32::from_rgb(0x4c, 0xaf, 0x50),
+                        "Fully portable — all 6 platforms provisioned".to_string(),
+                    )
+                } else if host_installed {
+                    (
+                        egui::Color32::from_rgb(0xff, 0xb3, 0x00),
+                        "Works on this host only. Install all platforms to make the stick truly portable.".to_string(),
+                    )
+                } else if any_installed {
+                    (
+                        egui::Color32::from_rgb(0xff, 0xb3, 0x00),
+                        "Partially provisioned — but NOT this host. Chat will not work until you install for the current platform.".to_string(),
+                    )
+                } else {
+                    (
+                        egui::Color32::from_rgb(0xe5, 0x73, 0x73),
+                        "No engine installed. Chat will fail. Install at least the current host.".to_string(),
+                    )
+                };
+                ui.colored_label(color, "●");
+                ui.label(msg);
+            });
+
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                let busy = self.job_running;
+                if ui
+                    .add_enabled(
+                        !busy && host.is_some(),
+                        egui::Button::new("⬇ Install for this host"),
+                    )
+                    .on_hover_text(format!(
+                        "Download llama.cpp {} for the platform you're on right now (~10–15 MB).",
+                        DEFAULT_LLAMA_TAG
+                    ))
+                    .clicked()
+                {
+                    self.action_install_engine(EngineSelection::CurrentHost);
+                }
+                if ui
+                    .add_enabled(!busy, egui::Button::new("⬇ Install for ALL platforms"))
+                    .on_hover_text("Download llama.cpp for macOS arm64/x64, Linux x64/arm64, Windows x64/arm64 (~60–90 MB total). Required for true portability.")
+                    .clicked()
+                {
+                    self.action_install_engine(EngineSelection::AllPlatforms);
+                }
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Install runtime for this host"))
+                    .on_hover_text("Copy this build's usbuddy-runtime onto the drive at the correct per-platform path so the launcher scripts can find it.")
+                    .clicked()
+                {
+                    self.action_install_runtime_host();
+                    self.refresh_engine_status();
+                }
+            });
+
+            ui.add_space(6.0);
+            egui::Grid::new("engines-grid")
+                .num_columns(3)
+                .striped(true)
+                .spacing([12.0, 4.0])
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new("Platform").strong());
+                    ui.label(egui::RichText::new("Status").strong());
+                    ui.label(egui::RichText::new("Path").strong());
+                    ui.end_row();
+                    let host_dir = host.map(|h| h.dir_name());
+                    for status in &self.engines {
+                        let is_host = host_dir.as_deref() == Some(&status.target.dir_name());
+                        let label = if is_host {
+                            format!("{} (this host)", status.target.dir_name())
+                        } else {
+                            status.target.dir_name()
+                        };
+                        ui.label(label);
+                        if status.installed {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(0x4c, 0xaf, 0x50),
+                                "Installed",
+                            );
+                        } else {
+                            ui.colored_label(egui::Color32::GRAY, "—");
+                        }
+                        ui.label(
+                            egui::RichText::new(format!("{}", status.server_path.display()))
+                                .small()
+                                .weak(),
+                        );
+                        ui.end_row();
+                    }
+                });
         });
     }
 
@@ -529,7 +767,7 @@ impl App {
     }
 
     fn render_catalog_card(&mut self, ui: &mut egui::Ui) {
-        card(ui, "2. Catalog", |ui| {
+        card(ui, "3. Catalog", |ui| {
             let n = self.catalog.as_ref().map(|c| c.models.len()).unwrap_or(0);
             let src = self.catalog_source.label();
             ui.horizontal(|ui| {
@@ -568,7 +806,7 @@ impl App {
     }
 
     fn render_models_card(&mut self, ui: &mut egui::Ui) {
-        card(ui, "3. Models", |ui| {
+        card(ui, "4. Models", |ui| {
             let Some(catalog) = self.catalog.clone() else {
                 ui.label(
                     egui::RichText::new("Load a catalog above to see available models.")

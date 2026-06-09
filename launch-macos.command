@@ -19,26 +19,35 @@ if [ -z "$ACTIVE" ]; then
     exit 1
 fi
 
-ARCH=$(uname -m)
-if [ "$ARCH" = "arm64" ]; then
-    BIN_DIR="macos-arm64"
-else
-    BIN_DIR="macos-x64"
+case "$(uname -m)" in
+    arm64) ARCH=arm64 ;;
+    x86_64) ARCH=x64 ;;
+    *) ARCH="$(uname -m)" ;;
+esac
+
+BIN_DIR="$SCRIPT_DIR/versions/$ACTIVE/bin/macos-$ARCH"
+RUNTIME="$BIN_DIR/usbuddy-runtime"
+ENGINE="$BIN_DIR/llama-server"
+
+# Fall back to the legacy single-arch wrapper if per-arch dir absent.
+if [ ! -f "$RUNTIME" ]; then
+    BIN_DIR="$SCRIPT_DIR/versions/$ACTIVE/bin/macos"
+    RUNTIME="$BIN_DIR/usbuddy-runtime"
+    ENGINE="$BIN_DIR/llama-server"
 fi
 
-RUNTIME="$SCRIPT_DIR/versions/$ACTIVE/bin/$BIN_DIR/usbuddy-runtime"
-
-# Fall back to the universal2 wrapper if per-arch binary absent.
 if [ ! -f "$RUNTIME" ]; then
-    RUNTIME="$SCRIPT_DIR/versions/$ACTIVE/bin/macos/usbuddy-runtime"
-fi
-
-if [ ! -f "$RUNTIME" ]; then
-    osascript -e "display alert \"USBuddy\" message \"Runtime binary not found for version $ACTIVE.\""
+    osascript -e "display alert \"USBuddy\" message \"Runtime binary not found for version $ACTIVE ($(uname -m)). Run: usbuddy-installer-cli install-runtime '$SCRIPT_DIR'\""
     exit 1
 fi
 
-# Strip quarantine attribute so Gatekeeper does not re-block on each host.
-xattr -d com.apple.quarantine "$RUNTIME" 2>/dev/null || true
+if [ ! -f "$ENGINE" ]; then
+    osascript -e "display alert \"USBuddy\" message \"llama-server engine not found. Run: usbuddy-installer-cli engine install '$SCRIPT_DIR' all\""
+    exit 1
+fi
+
+# Strip quarantine on every binary the runtime might exec, including sibling dylibs.
+xattr -dr com.apple.quarantine "$BIN_DIR" 2>/dev/null || true
+chmod +x "$RUNTIME" "$ENGINE" 2>/dev/null || true
 
 exec "$RUNTIME" serve --drive "$SCRIPT_DIR" --open-browser "$@"

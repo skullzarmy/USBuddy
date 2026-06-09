@@ -20,11 +20,31 @@ if [ -z "$ACTIVE" ]; then
     exit 1
 fi
 
-RUNTIME="$SCRIPT_DIR/versions/$ACTIVE/bin/linux-x64/usbuddy-runtime"
+case "$(uname -m)" in
+    x86_64|amd64) ARCH=x64 ;;
+    aarch64|arm64) ARCH=arm64 ;;
+    *) ARCH="$(uname -m)" ;;
+esac
+
+BIN_DIR="$SCRIPT_DIR/versions/$ACTIVE/bin/linux-$ARCH"
+RUNTIME="$BIN_DIR/usbuddy-runtime"
+ENGINE="$BIN_DIR/llama-server"
 
 if [ ! -f "$RUNTIME" ]; then
     echo "USBuddy: runtime binary not found at $RUNTIME" >&2
+    echo "Re-run the installer with: usbuddy-installer-cli install-runtime \"$SCRIPT_DIR\"" >&2
     exit 1
 fi
+
+if [ ! -f "$ENGINE" ]; then
+    echo "USBuddy: llama-server engine not found at $ENGINE" >&2
+    echo "Provision engines with: usbuddy-installer-cli engine install \"$SCRIPT_DIR\" all" >&2
+    exit 1
+fi
+
+# exFAT and some FUSE mounts come up without the +x bit. Re-set it if we can.
+chmod +x "$RUNTIME" "$ENGINE" 2>/dev/null || true
+# Linker needs to find sibling .so files dropped alongside llama-server.
+export LD_LIBRARY_PATH="$BIN_DIR:${LD_LIBRARY_PATH:-}"
 
 exec "$RUNTIME" serve --drive "$SCRIPT_DIR" --open-browser "$@"
