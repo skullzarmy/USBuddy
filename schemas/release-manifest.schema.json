@@ -14,11 +14,13 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "sha256", "url"],
+        "required": ["name", "file_name", "sha256", "url"],
         "properties": {
           "name": { "type": "string" },
+          "file_name": { "type": "string" },
           "sha256": { "type": "string", "minLength": 64, "maxLength": 64 },
-          "url": { "type": "string" }
+          "url": { "type": "string" },
+          "platform": { "type": "string" }
         }
       }
     }
