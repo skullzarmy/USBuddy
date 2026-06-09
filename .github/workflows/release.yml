@@ -130,7 +130,7 @@ jobs:
         if: matrix.build_full
         with:
           node-version: 22
-      - run: npm --prefix ui/web build
+      - run: npm --prefix ui/web run build
         if: matrix.build_full
       - name: Build workspace (host-native)
         if: matrix.build_full
