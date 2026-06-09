@@ -169,6 +169,19 @@ impl DriveLayout {
         Ok(next)
     }
 
+    /// Activate `version`, keeping the currently-active version as previous.
+    pub fn rollback_to(&self, version: &str) -> Result<CurrentVersionPointer> {
+        let current = self.read_current().ok();
+        let previous = current.map(|c| c.active);
+        let next = CurrentVersionPointer {
+            schema: CURRENT_SCHEMA_V1,
+            active: version.into(),
+            previous,
+        };
+        self.write_current(&next)?;
+        Ok(next)
+    }
+
     pub fn discover_drop_in_models(&self) -> Result<Vec<DropInModel>> {
         if !self.models_dir().exists() {
             return Ok(Vec::new());

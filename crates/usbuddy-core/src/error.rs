@@ -14,6 +14,10 @@ pub enum UsbBuddyError {
     MissingPath(PathBuf),
     #[error("invalid state: {0}")]
     InvalidState(String),
+    #[error("hash mismatch: expected {expected}, got {actual}")]
+    HashMismatch { expected: String, actual: String },
+    #[error("network error: {0}")]
+    Network(String),
     #[error(transparent)]
     Io(#[from] io::Error),
     #[error(transparent)]

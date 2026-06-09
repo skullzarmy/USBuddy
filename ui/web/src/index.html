@@ -14,19 +14,59 @@
         <p id="status">Loading runtime status…</p>
       </header>
 
-      <section class="panel">
-        <h2>Installed models</h2>
-        <ul id="models"></ul>
+      <section class="panel" id="advisories-section" hidden>
+        <h2>⚠️ Catalog advisories</h2>
+        <ul id="advisories"></ul>
       </section>
 
-      <section class="panel grid">
+      <section class="panel" id="picker-section">
+        <h2>Model</h2>
+        <div id="model-list" class="model-list"></div>
+        <div id="no-models" class="empty-hint" hidden>
+          No models found. Copy a <code>.gguf</code> file to the <code>models/</code>
+          folder on the drive, or run <code>usbuddy-installer-cli model download</code>.
+        </div>
+
+        <div class="context-row" id="context-row" hidden>
+          <label for="context-slider">Context length</label>
+          <input id="context-slider" type="range" min="512" max="32768" step="512" value="4096">
+          <span id="context-value">4096 tokens</span>
+          <span id="ram-badge" class="ram-badge"></span>
+        </div>
+
+        <div class="launch-controls" id="launch-controls" hidden>
+          <button id="launch-btn" class="btn primary">Launch model</button>
+          <button id="stop-btn" class="btn danger" hidden>Stop model</button>
+        </div>
+        <p id="launch-status" class="launch-status"></p>
+      </section>
+
+      <section class="panel chat-panel" id="chat-section" hidden>
+        <h2>Chat</h2>
+        <div id="chat-messages" class="chat-messages"></div>
+        <form id="chat-form" class="chat-form">
+          <textarea
+            id="chat-input"
+            class="chat-input"
+            placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+            rows="3"
+          ></textarea>
+          <button type="submit" class="btn primary">Send</button>
+        </form>
+      </section>
+
+      <section class="panel grid info-grid">
         <div>
-          <h2>Current version</h2>
+          <h2>Runtime version</h2>
           <p id="version">—</p>
         </div>
         <div>
-          <h2>Catalog advisories</h2>
-          <ul id="advisories"></ul>
+          <h2>RAM available</h2>
+          <p id="ram-info">—</p>
+        </div>
+        <div>
+          <h2>Platform</h2>
+          <p id="platform">—</p>
         </div>
       </section>
     </main>

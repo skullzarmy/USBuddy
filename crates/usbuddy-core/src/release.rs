@@ -22,8 +22,11 @@ pub struct ReleaseManifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseAsset {
     pub name: String,
+    pub file_name: String,
     pub sha256: String,
     pub url: String,
+    #[serde(default)]
+    pub platform: Option<String>,
 }
 
 impl ReleaseManifest {
@@ -68,8 +71,10 @@ mod tests {
             changelog: String::new(),
             assets: vec![ReleaseAsset {
                 name: "bundle".into(),
+                file_name: "usbuddy-linux-x64.tar.gz".into(),
                 sha256: "a".repeat(64),
                 url: "https://example.invalid".into(),
+                platform: Some("linux".into()),
             }],
         };
 

@@ -1,5 +1,6 @@
 pub mod atomic;
 pub mod catalog;
+pub mod download;
 pub mod error;
 pub mod hash;
 pub mod layout;

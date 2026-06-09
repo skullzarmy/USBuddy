@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 
 use crate::error::Result;
 
-fn encode_hex(bytes: impl AsRef<[u8]>) -> String {
+pub(crate) fn encode_hex(bytes: impl AsRef<[u8]>) -> String {
     let mut output = String::with_capacity(bytes.as_ref().len() * 2);
     for byte in bytes.as_ref() {
         use std::fmt::Write as _;

@@ -7,12 +7,19 @@ use serde::Serialize;
 use usbuddy_core::{
     catalog::load_catalog,
     compiled_version,
+    download::download_verified,
     layout::DriveLayout,
     license::{LicensePrefs, LicenseScope},
     platform::detect_platform,
     ram::{RamEstimateInput, assess_fit},
     release::load_release_manifest,
 };
+
+/// Default URL from which the catalog snapshot is fetched.
+const DEFAULT_CATALOG_URL: &str = "https://raw.githubusercontent.com/skullzarmy/USBuddy/main/fixtures/catalog/official.catalog.json";
+
+/// GitHub Releases API endpoint for the USBuddy installer.
+const RELEASE_API_URL: &str = "https://api.github.com/repos/skullzarmy/USBuddy/releases/latest";
 
 #[derive(Debug, Parser)]
 #[command(name = "usbuddy-installer-cli", version = compiled_version(), about = "USBuddy installer and maintenance CLI")]
@@ -39,6 +46,14 @@ enum Commands {
         #[command(subcommand)]
         command: LicenseCommand,
     },
+    Model {
+        #[command(subcommand)]
+        command: ModelCommand,
+    },
+    Update {
+        #[command(subcommand)]
+        command: UpdateCommand,
+    },
     RamAssess {
         available_gb: f64,
         model_gb: f64,
@@ -53,34 +68,41 @@ enum Commands {
 
 #[derive(Debug, Subcommand)]
 enum DriveCommand {
-    Inspect {
-        drive: PathBuf,
-    },
+    /// Print the current state of a USBuddy drive.
+    Inspect { drive: PathBuf },
+    /// Initialise the shadow-tree layout on a drive for a given runtime version.
     Init {
         drive: PathBuf,
         version: String,
         #[arg(long)]
         catalog: Option<PathBuf>,
     },
-    DiscoverModels {
-        drive: PathBuf,
-    },
-    Rollback {
-        drive: PathBuf,
-    },
+    /// List drop-in .gguf model files discovered on the drive.
+    DiscoverModels { drive: PathBuf },
+    /// Roll back the active runtime to the previous version.
+    Rollback { drive: PathBuf },
 }
 
 #[derive(Debug, Subcommand)]
 enum CatalogCommand {
+    /// Validate a catalog file against the schema.
     Validate {
         path: PathBuf,
         #[arg(long)]
         runtime: Option<String>,
     },
+    /// Download a fresh catalog snapshot from the upstream URL and save it to the drive.
+    Refresh {
+        drive: PathBuf,
+        /// Override the default catalog URL.
+        #[arg(long, default_value = DEFAULT_CATALOG_URL)]
+        url: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 enum ReleaseCommand {
+    /// Validate a release manifest file.
     Validate {
         path: PathBuf,
         #[arg(long)]
@@ -90,8 +112,48 @@ enum ReleaseCommand {
 
 #[derive(Debug, Subcommand)]
 enum LicenseCommand {
+    /// Print license preferences stored on the drive.
     ShowPrefs { drive: PathBuf },
+    /// Write license preferences to the drive.
     SetPrefs { drive: PathBuf, scope: ScopeArg },
+}
+
+#[derive(Debug, Subcommand)]
+enum ModelCommand {
+    /// Download a model from the catalog onto the drive.
+    Download {
+        drive: PathBuf,
+        /// Catalog model id (e.g. llama-3.1-8b-instruct-q4_k_m).
+        model_id: String,
+        /// Override the download URL (defaults to the catalog entry's source URL).
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// Remove a downloaded model from the drive.
+    Remove { drive: PathBuf, model_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum UpdateCommand {
+    /// Check whether a newer runtime is available.
+    Check { drive: PathBuf },
+    /// Download and stage a new runtime version (does not activate it yet).
+    Stage {
+        drive: PathBuf,
+        /// Target version to stage. Defaults to latest.
+        #[arg(long)]
+        version: Option<String>,
+        /// Base URL for runtime asset downloads.
+        #[arg(
+            long,
+            default_value = "https://github.com/skullzarmy/USBuddy/releases/download"
+        )]
+        base_url: String,
+    },
+    /// Activate a staged runtime version.
+    Activate { drive: PathBuf, version: String },
+    /// Roll back to the previous runtime version.
+    Rollback { drive: PathBuf },
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -146,6 +208,7 @@ fn main() -> anyhow::Result<()> {
                 print_json(&layout.rollback()?)?;
             }
         },
+
         Commands::Catalog { command } => match command {
             CatalogCommand::Validate { path, runtime } => {
                 let catalog = load_catalog(&path)?;
@@ -161,7 +224,22 @@ fn main() -> anyhow::Result<()> {
                     "runtime_supported": supported,
                 }))?;
             }
+            CatalogCommand::Refresh { drive, url } => {
+                let layout = DriveLayout::new(&drive);
+                let dest = layout.catalog_path();
+                eprintln!("Fetching catalog from {url} …");
+                let sha =
+                    download_verified(&url, &dest, None).context("failed to download catalog")?;
+                let catalog =
+                    load_catalog(&dest).context("downloaded catalog failed validation")?;
+                print_json(&serde_json::json!({
+                    "sha256": sha,
+                    "models": catalog.models.len(),
+                    "advisories": catalog.advisories.len(),
+                }))?;
+            }
         },
+
         Commands::Release { command } => match command {
             ReleaseCommand::Validate { path, current } => {
                 let manifest = load_release_manifest(&path)?;
@@ -177,6 +255,7 @@ fn main() -> anyhow::Result<()> {
                 }))?;
             }
         },
+
         Commands::License { command } => match command {
             LicenseCommand::ShowPrefs { drive } => {
                 let layout = DriveLayout::new(drive);
@@ -191,6 +270,181 @@ fn main() -> anyhow::Result<()> {
                 print_json(&prefs)?;
             }
         },
+
+        Commands::Model { command } => match command {
+            ModelCommand::Download {
+                drive,
+                model_id,
+                url,
+            } => {
+                let layout = DriveLayout::new(&drive);
+                let catalog_path = layout.catalog_path();
+                if !catalog_path.exists() {
+                    anyhow::bail!(
+                        "No catalog found at {}. Run `catalog refresh` first.",
+                        catalog_path.display()
+                    );
+                }
+                let catalog = load_catalog(&catalog_path)?;
+                let entry = catalog
+                    .models
+                    .iter()
+                    .find(|m| m.id == model_id || m.aliases.contains(&model_id))
+                    .ok_or_else(|| anyhow::anyhow!("model '{}' not found in catalog", model_id))?;
+
+                let download_url = url.as_deref().unwrap_or(&entry.source.url);
+                let dest = layout.models_dir().join(&entry.file_name);
+                eprintln!(
+                    "Downloading {} ({:.1} GiB) …",
+                    entry.display_name,
+                    entry.size_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+                );
+                let sha = download_verified(download_url, &dest, Some(&entry.sha256))
+                    .context("model download failed")?;
+                print_json(&serde_json::json!({
+                    "model_id": entry.id,
+                    "file": dest.display().to_string(),
+                    "sha256": sha,
+                }))?;
+            }
+            ModelCommand::Remove { drive, model_id } => {
+                let layout = DriveLayout::new(&drive);
+                let catalog_path = layout.catalog_path();
+                let file_name = if catalog_path.exists() {
+                    let catalog = load_catalog(&catalog_path)?;
+                    catalog
+                        .models
+                        .iter()
+                        .find(|m| m.id == model_id || m.aliases.contains(&model_id))
+                        .map(|e| e.file_name.clone())
+                } else {
+                    None
+                };
+                let file_name = file_name.unwrap_or_else(|| format!("{model_id}.gguf"));
+                let target = layout.models_dir().join(&file_name);
+                if target.exists() {
+                    fs::remove_file(&target)?;
+                    print_json(&serde_json::json!({ "removed": target.display().to_string() }))?;
+                } else {
+                    anyhow::bail!("Model file not found: {}", target.display());
+                }
+            }
+        },
+
+        Commands::Update { command } => match command {
+            UpdateCommand::Check { drive } => {
+                let layout = DriveLayout::new(&drive);
+                let current = layout.read_current().ok();
+                let active_version = current
+                    .as_ref()
+                    .map(|c| c.active.as_str())
+                    .unwrap_or("none");
+
+                eprintln!("Checking for updates (current: {active_version}) …");
+                let release_info = fetch_latest_release_info()?;
+                let latest = release_info["tag_name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .trim_start_matches('v');
+
+                let is_newer = if active_version == "none" {
+                    true
+                } else {
+                    let cur = Version::parse(active_version)?;
+                    let lat = Version::parse(latest)?;
+                    lat > cur
+                };
+
+                print_json(&serde_json::json!({
+                    "current": active_version,
+                    "latest": latest,
+                    "update_available": is_newer,
+                    "release_url": release_info["html_url"],
+                }))?;
+            }
+            UpdateCommand::Stage {
+                drive,
+                version,
+                base_url,
+            } => {
+                let layout = DriveLayout::new(&drive);
+
+                let target_version = match version {
+                    Some(v) => v,
+                    None => {
+                        let info = fetch_latest_release_info()?;
+                        info["tag_name"]
+                            .as_str()
+                            .unwrap_or("")
+                            .trim_start_matches('v')
+                            .to_string()
+                    }
+                };
+
+                let manifest_url = format!("{base_url}/v{target_version}/release-manifest.json");
+                eprintln!("Fetching release manifest for v{target_version} …");
+                let tmp_manifest = tempfile::NamedTempFile::new()?;
+                download_verified(&manifest_url, tmp_manifest.path(), None)
+                    .context("failed to download release manifest")?;
+                let manifest = load_release_manifest(tmp_manifest.path())?;
+
+                let platform = detect_platform();
+                let asset = manifest
+                    .assets
+                    .iter()
+                    .find(|a| {
+                        a.platform.as_deref() == Some(&platform.os)
+                            || a.platform.as_deref() == Some("all")
+                    })
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("No asset in manifest for platform '{}'", platform.os)
+                    })?;
+
+                let staged_dir = layout
+                    .root()
+                    .join("versions")
+                    .join(format!("{}.tmp", target_version));
+                let asset_url = format!("{base_url}/v{target_version}/{}", asset.file_name);
+                let asset_dest = staged_dir.join(&asset.file_name);
+
+                eprintln!("Downloading runtime asset {} …", asset.file_name);
+                download_verified(&asset_url, &asset_dest, Some(&asset.sha256))
+                    .context("runtime asset download failed")?;
+
+                // Write the manifest into the staged tree.
+                let manifest_dest = staged_dir.join("version.json");
+                fs::copy(tmp_manifest.path(), &manifest_dest)?;
+
+                print_json(&serde_json::json!({
+                    "staged_version": target_version,
+                    "staged_dir": staged_dir.display().to_string(),
+                    "next_step": format!("run `update activate --drive {} {}`", drive.display(), target_version),
+                }))?;
+            }
+            UpdateCommand::Activate { drive, version } => {
+                let layout = DriveLayout::new(&drive);
+                let staged_dir = layout
+                    .root()
+                    .join("versions")
+                    .join(format!("{version}.tmp"));
+                let final_dir = layout.root().join("versions").join(&version);
+
+                if !staged_dir.exists() {
+                    anyhow::bail!(
+                        "No staged version found at {}. Run `update stage` first.",
+                        staged_dir.display()
+                    );
+                }
+                fs::rename(&staged_dir, &final_dir)?;
+                let current = layout.rollback_to(&version)?;
+                print_json(&current)?;
+            }
+            UpdateCommand::Rollback { drive } => {
+                let layout = DriveLayout::new(drive);
+                print_json(&layout.rollback()?)?;
+            }
+        },
+
         Commands::RamAssess {
             available_gb,
             model_gb,
@@ -215,6 +469,19 @@ fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn fetch_latest_release_info() -> anyhow::Result<serde_json::Value> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(concat!("usbuddy/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let info: serde_json::Value = client
+        .get(RELEASE_API_URL)
+        .send()
+        .and_then(|r| r.error_for_status())
+        .and_then(|r| r.json())
+        .context("failed to fetch release info from GitHub API")?;
+    Ok(info)
 }
 
 #[derive(Debug, Serialize)]
