@@ -15,6 +15,118 @@ model parameters all live on the drive.
 
 ---
 
+## Quickstart
+
+> **Status note.** USBuddy is pre-release. There are **no published binaries
+> yet** and the `egui` GUI / `ratatui` TUI installer surfaces are not built.
+> Today you drive everything from source via the CLI (`usbuddy-installer-cli`)
+> and the runtime (`usbuddy-runtime`). The launcher scripts at the repo root
+> (`launch-macos.command`, `launch-windows.bat`, `launch-linux.sh`) are the
+> shims that ship to the **USB drive itself** — they are not how you start
+> development.
+
+### Prerequisites
+
+- Rust toolchain (stable, edition 2024) — install via <https://rustup.rs>
+- Node.js 18+ (only if you want to build/lint/test the web UI)
+- A `llama-server` binary from [llama.cpp](https://github.com/ggml-org/llama.cpp)
+  on your `PATH` — required to actually launch a model. The runtime can boot
+  and serve the UI without it; you just can't chat until it's present.
+- A target directory to act as your "USB drive". Any folder works for
+  development — a real exFAT-formatted USB is not required.
+
+### 1. Clone and build
+
+```sh
+git clone https://github.com/skullzarmy/USBuddy.git
+cd USBuddy
+cargo build --release --workspace
+```
+
+The two binaries you'll use land in `target/release/`:
+
+- `usbuddy-installer-cli` — sets up a drive, refreshes the catalog, downloads
+  models, stages/activates runtime updates.
+- `usbuddy-runtime` — the localhost HTTP server + chat UI that runs from the
+  drive.
+
+### 2. Initialise a drive
+
+Pick any directory to act as the drive root (e.g. `/tmp/usbuddy-dev` or your
+actual USB mount point):
+
+```sh
+DRIVE=/tmp/usbuddy-dev
+
+# Lay down the shadow-tree, current.json, .usbuddy/, models/, etc.
+cargo run -p usbuddy-installer-cli -- drive init "$DRIVE" 0.1.0
+
+# Seed it with the sample catalog (in real use, `catalog refresh` fetches
+# the published one from GitHub Releases).
+cp fixtures/catalog/official.catalog.json "$DRIVE/catalog.json"
+
+# Inspect to confirm.
+cargo run -p usbuddy-installer-cli -- drive inspect "$DRIVE"
+```
+
+### 3. Add a model
+
+Either drop any `.gguf` file into `"$DRIVE/models/"` (it will be discovered
+as a `community-unverified` drop-in), or use the catalog flow once you have
+real entries with valid SHA256s:
+
+```sh
+cargo run -p usbuddy-installer-cli -- model download "$DRIVE" <model_id>
+```
+
+> The sample catalog in `fixtures/catalog/` uses placeholder hashes and won't
+> verify. Drop-in is the easiest path until the official catalog is populated.
+
+### 4. Run the runtime
+
+```sh
+cargo run -p usbuddy-runtime -- serve --drive "$DRIVE" --open-browser
+```
+
+This serves the chat UI on <http://127.0.0.1:8765> and opens your default
+browser. The runtime will spawn `llama-server` on port 8766 when you pick a
+model and hit launch.
+
+### Other useful CLI commands
+
+```sh
+cargo run -p usbuddy-installer-cli -- catalog refresh "$DRIVE"
+cargo run -p usbuddy-installer-cli -- catalog validate fixtures/catalog/official.catalog.json
+cargo run -p usbuddy-installer-cli -- update check "$DRIVE"
+cargo run -p usbuddy-installer-cli -- license set-prefs "$DRIVE" permissive-only
+cargo run -p usbuddy-installer-cli -- ram-assess 16 4   # 16 GiB available, 4 GiB model
+cargo run -p usbuddy-installer-cli -- --help            # full command tree
+```
+
+### Building the web UI (optional)
+
+The runtime embeds the SPA at compile time via `include_str!`, so a plain
+`cargo build` already bundles it. The `npm` scripts under `ui/web/` exist for
+linting and the bundle-validation tests:
+
+```sh
+npm --prefix ui/web install
+npm --prefix ui/web run lint
+npm --prefix ui/web run test
+npm --prefix ui/web run build
+```
+
+### Validating a full change
+
+```sh
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+npm --prefix ui/web run test
+```
+
+---
+
 ## Requirements (user-facing)
 
 ### A. Easy, cross-platform installer
