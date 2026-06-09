@@ -53,6 +53,7 @@ pub fn download_verified(url: &str, dest: &Path, expected_sha256: Option<&str>) 
             expected: expected.to_string(),
             actual: digest,
         });
+    }
     if dest.exists() {
         fs::remove_file(dest)?;
     }

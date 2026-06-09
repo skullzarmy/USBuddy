@@ -16,7 +16,8 @@ use usbuddy_core::{
 };
 
 /// Default URL from which the catalog snapshot is fetched.
-const DEFAULT_CATALOG_URL: &str = "https://raw.githubusercontent.com/skullzarmy/USBuddy/main/fixtures/catalog/official.catalog.json";
+const DEFAULT_CATALOG_URL: &str =
+    "https://github.com/skullzarmy/USBuddy/releases/latest/download/official.catalog.json";
 
 /// GitHub Releases API endpoint for the USBuddy installer.
 const RELEASE_API_URL: &str = "https://api.github.com/repos/skullzarmy/USBuddy/releases/latest";
@@ -383,10 +384,11 @@ fn main() -> anyhow::Result<()> {
 
                 let manifest_url = format!("{base_url}/v{target_version}/release-manifest.json");
                 eprintln!("Fetching release manifest for v{target_version} …");
-                let tmp_manifest = tempfile::NamedTempFile::new()?;
-                download_verified(&manifest_url, tmp_manifest.path(), None)
+                let tmp_manifest_dir = tempfile::tempdir()?;
+                let manifest_path = tmp_manifest_dir.path().join("release-manifest.json");
+                download_verified(&manifest_url, &manifest_path, None)
                     .context("failed to download release manifest")?;
-                let manifest = load_release_manifest(tmp_manifest.path())?;
+                let manifest = load_release_manifest(&manifest_path)?;
 
                 let platform = detect_platform();
                 let asset = manifest
@@ -413,7 +415,7 @@ fn main() -> anyhow::Result<()> {
 
                 // Write the manifest into the staged tree.
                 let manifest_dest = staged_dir.join("version.json");
-                fs::copy(tmp_manifest.path(), &manifest_dest)?;
+                fs::copy(&manifest_path, &manifest_dest)?;
 
                 print_json(&serde_json::json!({
                     "staged_version": target_version,
