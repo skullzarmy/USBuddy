@@ -239,10 +239,23 @@ async fn api_launch(
 
     // RAM-fit check.
     let memory = detect_memory();
+    let model_bytes = req.model_size_bytes.unwrap_or_else(|| {
+        state
+            .catalog
+            .as_ref()
+            .and_then(|c| {
+                c.models
+                    .iter()
+                    .find(|m| m.id == req.model_id || m.aliases.iter().any(|a| a == &req.model_id))
+                    .map(|m| m.size_bytes)
+            })
+            .or_else(|| std::fs::metadata(&model_path).ok().map(|m| m.len()))
+            .unwrap_or(0)
+    });
     let decision = assess_fit(
         memory,
         RamEstimateInput {
-            model_bytes: req.model_size_bytes.unwrap_or(0),
+            model_bytes,
             context_tokens: req.context_tokens.unwrap_or(4_096),
             kv_bytes_per_token: 131_072,
             runtime_overhead_bytes: 512 * 1024 * 1024,
