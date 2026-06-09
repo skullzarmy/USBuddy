@@ -500,48 +500,32 @@ Cached with `Swatinem/rust-cache@v2`.
 
 ## Status
 
-- Repo scaffolded.
-- Architecture & plan: **locked in** (this document).
-- Code: **not yet started.** Next groundwork: `docs/ARCHITECTURE.md`,
-  `docs/CATALOG-SPEC.md`, and `docs/FOOTPRINT.md` before any code lands.
-- License: **Apache-2.0** (see `LICENSE` and `NOTICE`).
+- Repo scaffolded. ✅
+- Architecture & plan: **locked in** (this document). ✅
+- Docs: `docs/ARCHITECTURE.md`, `docs/CATALOG-SPEC.md`, `docs/FOOTPRINT.md`, `docs/VERIFICATION.md`. ✅
+- Core crates: **implemented.** `usbuddy-core`, `usbuddy-installer-cli`, `usbuddy-runtime`. ✅
+- License: **Apache-2.0** (see `LICENSE` and `NOTICE`). ✅
 
-### Decided
-- Inference engine: **llama.cpp / `llama-server`**
-- Wrapper language: **Rust**
-- Installer surfaces: **CLI is the foundation**; `egui` GUI and `ratatui` TUI
-  are thin shells over it
-- Chat UI: **static SPA in browser private mode**, with CLI/TUI fallback
-- Drive format: **exFAT**
-- USB layout: **shadow-tree** with `current.json` pointer; `versions/{ver}/`
-  per release; models/catalog/user-data shared at drive root
-- Model layer: **in-repo catalog, forkable, three sources, SHA256 integrity**
-- Catalog format: **JSON, schema-versioned (`usbuddy.catalog/v1`), flat
-  entries with `family_id`, named prompt templates, `capabilities` array,
-  `aliases` for renames, single `stable` channel, `advisories[]` array**
-- **Content profile taxonomy** replaces "uncensored" branding (capability
-  fully preserved)
-- Gated models: **HF token primary + manual walkthrough + drop-in fallback**
-- License handling: **three-tier (managed / drop-in / opt-out)** with
-  per-model checkbox + "View license" UX in the picker and auditable
-  opt-out config
-- RAM-fit advisor: **green / yellow / red bands** against detected available
-  RAM, **context-length slider** in picker, **idle unload default-on at 5
-  min** (toggleable)
-- Mid-session model swap: **kill-and-restart with message-level state
-  replay**; force "start fresh" on `instruct` ↔ `base` profile-boundary swaps
-- **Updates:** user-initiated only, never automatic; atomic shadow-tree
-  install; one-click rollback to N-1; llama-server pinned to runtime;
-  catalog refreshable independently; advisories informational only; no
-  "out of date" nagging
-- Code signing: **out of scope; documented unblock posture for macOS/Windows**
-- CI/CD: **`ci.yml` + `release.yml` (`workflow_dispatch`), matrix above, draft
-  releases, SBOM + SLSA provenance, workflow auto-tags**
+### What's built
+
+| Component | Status |
+| --- | --- |
+| `usbuddy-core` — catalog, layout, RAM-fit, hash, license, atomic writes | ✅ |
+| `usbuddy-installer-cli` — drive init/inspect/rollback, catalog validate/refresh, model download/remove, update check/stage/activate | ✅ |
+| `usbuddy-runtime` — localhost HTTP server, llama-server spawn/kill, chat reverse-proxy, static SPA | ✅ |
+| Chat UI — model picker, RAM-fit indicators, context-length slider, chat interface | ✅ |
+| CI — `ci.yml` (lint/test/build/audit matrix), `release.yml` (workflow_dispatch, SBOM, SLSA) | ✅ |
+| `catalog-validate.yml` — validates catalog on PR | ✅ |
+| Launcher scripts — `launch-linux.sh`, `launch-macos.command`, `launch-windows.bat` | ✅ |
+| JSON schemas — `catalog.schema.json`, `release-manifest.schema.json` | ✅ |
 
 ### Open (implementation work, not architecture)
 - Empirical tuning of RAM-fit threshold constants on real hardware
-- Authoring `docs/ARCHITECTURE.md`, `docs/CATALOG-SPEC.md`, `docs/FOOTPRINT.md`
-- Deferred workflows: `footprint.yml`, `catalog-validate.yml`, E2E install test
+- Populate `fixtures/catalog/official.catalog.json` with real model entries and verified SHA256 hashes
+- `egui` GUI and `ratatui` TUI shells over the CLI core
+- `footprint.yml` snapshot-diff regression workflow
+- E2E install test on real USB-like volumes
+- Idle model unload (5-min threshold) in the runtime wrapper
 
 ## License
 

@@ -1,0 +1,9 @@
+{
+  "schema": "usbuddy.catalog/v1",
+  "runtime": {
+    "min": "0.1.0",
+    "max": "0.1.99"
+  },
+  "models": [],
+  "advisories": []
+}

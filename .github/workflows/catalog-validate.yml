@@ -1,0 +1,44 @@
+name: catalog-validate
+
+on:
+  pull_request:
+    paths:
+      - 'fixtures/catalog/**'
+      - 'schemas/catalog.schema.json'
+  push:
+    branches:
+      - main
+    paths:
+      - 'fixtures/catalog/**'
+      - 'schemas/catalog.schema.json'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build installer CLI
+        run: cargo build --release -p usbuddy-installer-cli
+
+      - name: Validate official catalog against schema
+        run: |
+          target/release/usbuddy-installer-cli catalog validate \
+            fixtures/catalog/official.catalog.json \
+            --runtime 0.1.0
+
+      - name: Install ajv-cli for JSON Schema validation
+        run: npm install -g ajv-cli ajv-formats
+
+      - name: Validate catalog JSON against schema
+        run: |
+          ajv validate \
+            --spec=draft2020 \
+            -s schemas/catalog.schema.json \
+            -d fixtures/catalog/official.catalog.json \
+            --all-errors

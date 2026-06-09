@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/skullzarmy/USBuddy/schemas/release-manifest.schema.json",
+  "title": "USBuddy release manifest v1",
+  "type": "object",
+  "required": ["schema", "version", "released_at", "channel", "assets"],
+  "properties": {
+    "schema": { "const": "usbuddy.release/v1" },
+    "version": { "type": "string" },
+    "released_at": { "type": "string" },
+    "channel": { "type": "string" },
+    "changelog": { "type": "string" },
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "file_name", "sha256", "url"],
+        "properties": {
+          "name": { "type": "string" },
+          "file_name": { "type": "string" },
+          "sha256": { "type": "string", "minLength": 64, "maxLength": 64 },
+          "url": { "type": "string" },
+          "platform": { "type": "string" }
+        }
+      }
+    }
+  }
+}
