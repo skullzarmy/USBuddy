@@ -85,7 +85,7 @@ function renderAdvisories(advisories) {
 function renderModelList(catalogModels, dropIns, ramPreviews) {
   const allModels = [
     ...catalogModels.map((m, i) => ({ id: m.id, label: m.display_name, profile: m.profile, sizeBytes: m.size_bytes, ram: ramPreviews[i] })),
-    ...dropIns.map(d => ({ id: d.display_name.replace(/\s+/g, '-').toLowerCase(), label: d.display_name, profile: d.profile, sizeBytes: 0, ram: null })),
+    ...dropIns.map(d => ({ id: (d.path.split(/[\\/]/).pop() ?? d.display_name).replace(/\.gguf$/i, ''), label: d.display_name, profile: d.profile, sizeBytes: 0, ram: null })),
   ];
 
   modelListEl.innerHTML = '';
