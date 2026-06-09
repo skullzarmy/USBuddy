@@ -113,6 +113,9 @@ struct App {
     output: Vec<String>,
     job_rx: Option<mpsc::Receiver<Job>>,
     job_running: bool,
+
+    // Decoded once at startup, used to render the mascot in the header.
+    mascot: Option<egui::TextureHandle>,
 }
 
 impl App {
@@ -144,6 +147,7 @@ impl App {
             )],
             job_rx: None,
             job_running: false,
+            mascot: None,
         };
         me.refresh_layout();
         me.refresh_engine_status();
@@ -595,74 +599,118 @@ impl eframe::App for App {
 
 impl App {
     fn render_top_bar(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::top("header").show_inside(ui, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.heading("USBuddy");
-                ui.label(egui::RichText::new(format!("v{}", compiled_version())).weak());
-                ui.separator();
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{:.1} GiB RAM available",
-                        self.memory.available_bytes as f64 / 1_073_741_824.0
+        egui::Panel::top("header")
+            .frame(
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(0x16, 0x1b, 0x22))
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_rgb(0x2a, 0x31, 0x3c),
                     ))
-                    .weak(),
-                );
+                    .inner_margin(egui::Margin::symmetric(20, 12)),
+            )
+            .show_inside(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if let Some(tex) = &self.mascot {
+                        ui.add(egui::Image::new(tex).fit_to_exact_size(egui::vec2(36.0, 36.0)));
+                        ui.add_space(10.0);
+                    }
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new("USBuddy")
+                                .size(20.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(0x5b, 0x8c, 0xff)),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Installer · v{}  ·  {:.1} GiB RAM available",
+                                compiled_version(),
+                                self.memory.available_bytes as f64 / 1_073_741_824.0
+                            ))
+                            .size(11.0)
+                            .color(egui::Color32::from_rgb(0x6b, 0x77, 0x85)),
+                        );
+                    });
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("⚙ Settings").clicked() {
-                        self.show_settings = !self.show_settings;
-                    }
-                    if self.job_running {
-                        ui.add_space(8.0);
-                        ui.colored_label(egui::Color32::YELLOW, "● Working…");
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("⚙  Settings").clicked() {
+                            self.show_settings = !self.show_settings;
+                        }
+                        if self.job_running {
+                            ui.add_space(10.0);
+                            ui.colored_label(
+                                egui::Color32::from_rgb(0xff, 0xc9, 0x4a),
+                                "● Working…",
+                            );
+                        }
+                    });
                 });
             });
-            ui.add_space(4.0);
-        });
     }
 
     fn render_log_panel(&mut self, ui: &mut egui::Ui) {
         egui::Panel::bottom("log")
             .resizable(true)
             .default_size(180.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(0x0a, 0x0d, 0x12))
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_rgb(0x2a, 0x31, 0x3c),
+                    ))
+                    .inner_margin(egui::Margin::symmetric(16, 10)),
+            )
             .show_inside(ui, |ui| {
-                ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Log").strong());
+                    ui.label(
+                        egui::RichText::new("⌨  Log")
+                            .strong()
+                            .color(egui::Color32::from_rgb(0x9a, 0xa5, 0xb4)),
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button("Clear").clicked() {
                             self.output.clear();
                         }
                     });
                 });
-                ui.separator();
+                ui.add_space(4.0);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
                         for line in &self.output {
-                            ui.monospace(line);
+                            ui.label(
+                                egui::RichText::new(line)
+                                    .monospace()
+                                    .color(egui::Color32::from_rgb(0xc8, 0xd0, 0xda)),
+                            );
                         }
                     });
             });
     }
 
     fn render_main(&mut self, ui: &mut egui::Ui) {
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                self.render_launch_card(ui);
-                ui.add_space(8.0);
-                self.render_drive_card(ui);
-                ui.add_space(8.0);
-                self.render_engine_card(ui);
-                ui.add_space(8.0);
-                self.render_catalog_card(ui);
-                ui.add_space(8.0);
-                self.render_models_card(ui);
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(0x0d, 0x11, 0x17))
+                    .inner_margin(egui::Margin::symmetric(20, 16)),
+            )
+            .show_inside(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.render_launch_card(ui);
+                    ui.add_space(12.0);
+                    self.render_drive_card(ui);
+                    ui.add_space(12.0);
+                    self.render_engine_card(ui);
+                    ui.add_space(12.0);
+                    self.render_catalog_card(ui);
+                    ui.add_space(12.0);
+                    self.render_models_card(ui);
+                });
             });
-        });
     }
 
     fn readiness(&self) -> Readiness {
@@ -1300,14 +1348,87 @@ impl App {
 // --------------------------------------------------------------------
 
 fn card<R>(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::same(10))
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgb(0x1a, 0x1f, 0x28))
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgb(0x2a, 0x31, 0x3c),
+        ))
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::symmetric(16, 14))
         .show(ui, |ui| {
-            ui.label(egui::RichText::new(title).heading());
-            ui.separator();
+            ui.label(
+                egui::RichText::new(title)
+                    .size(15.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(0xe6, 0xed, 0xf3)),
+            );
+            ui.add_space(8.0);
             body(ui)
         })
         .inner
+}
+
+/// Centralised dark theme so cards, headers, buttons, and input fields all
+/// look like they belong to the same product. Called once at app startup.
+fn apply_theme(ctx: &egui::Context) {
+    use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Visuals};
+
+    let mut visuals = Visuals::dark();
+    visuals.panel_fill = Color32::from_rgb(0x0d, 0x11, 0x17);
+    visuals.window_fill = Color32::from_rgb(0x16, 0x1b, 0x22);
+    visuals.extreme_bg_color = Color32::from_rgb(0x0a, 0x0d, 0x12);
+    visuals.faint_bg_color = Color32::from_rgb(0x1a, 0x1f, 0x28);
+    visuals.window_stroke = Stroke::new(1.0, Color32::from_rgb(0x2a, 0x31, 0x3c));
+    visuals.widgets.noninteractive.bg_stroke =
+        Stroke::new(1.0, Color32::from_rgb(0x2a, 0x31, 0x3c));
+    visuals.widgets.noninteractive.fg_stroke =
+        Stroke::new(1.0, Color32::from_rgb(0xe6, 0xed, 0xf3));
+    visuals.widgets.inactive.bg_fill = Color32::from_rgb(0x1f, 0x26, 0x30);
+    visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(0x1a, 0x1f, 0x28);
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0x2a, 0x31, 0x3c));
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(0xe6, 0xed, 0xf3));
+    visuals.widgets.inactive.corner_radius = CornerRadius::same(8);
+    visuals.widgets.hovered.bg_fill = Color32::from_rgb(0x29, 0x32, 0x3f);
+    visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(0x23, 0x2b, 0x36);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0x3a, 0x44, 0x52));
+    visuals.widgets.hovered.corner_radius = CornerRadius::same(8);
+    visuals.widgets.active.bg_fill = Color32::from_rgb(0x4f, 0x7a, 0xef);
+    visuals.widgets.active.weak_bg_fill = Color32::from_rgb(0x5b, 0x8c, 0xff);
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0x5b, 0x8c, 0xff));
+    visuals.widgets.active.corner_radius = CornerRadius::same(8);
+    visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(0x5b, 0x8c, 0xff, 60);
+    visuals.selection.stroke = Stroke::new(1.0, Color32::from_rgb(0x5b, 0x8c, 0xff));
+    visuals.hyperlink_color = Color32::from_rgb(0x5b, 0x8c, 0xff);
+    visuals.override_text_color = Some(Color32::from_rgb(0xe6, 0xed, 0xf3));
+    ctx.set_visuals(visuals);
+
+    let mut style = (*ctx.global_style()).clone();
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.button_padding = egui::vec2(12.0, 7.0);
+    style.spacing.window_margin = egui::Margin::same(0);
+    style.spacing.interact_size.y = 28.0;
+
+    style.text_styles.insert(
+        TextStyle::Heading,
+        FontId::new(20.0, FontFamily::Proportional),
+    );
+    style
+        .text_styles
+        .insert(TextStyle::Body, FontId::new(14.0, FontFamily::Proportional));
+    style.text_styles.insert(
+        TextStyle::Button,
+        FontId::new(14.0, FontFamily::Proportional),
+    );
+    style.text_styles.insert(
+        TextStyle::Small,
+        FontId::new(12.0, FontFamily::Proportional),
+    );
+    style.text_styles.insert(
+        TextStyle::Monospace,
+        FontId::new(13.0, FontFamily::Monospace),
+    );
+    ctx.set_global_style(style);
 }
 
 fn drive_status(layout: Option<&DriveLayout>) -> (egui::Color32, String) {
@@ -1387,6 +1508,26 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "USBuddy installer",
         native_options,
-        Box::new(|_cc| Ok(Box::new(app))),
+        Box::new(|cc| {
+            apply_theme(&cc.egui_ctx);
+            // Decode the mascot into an egui texture once at startup so the
+            // top bar can render it cheaply every frame.
+            if let Ok(img) = image::load_from_memory(APP_ICON_PNG) {
+                let img = img.into_rgba8();
+                let (w, h) = img.dimensions();
+                let tex = cc.egui_ctx.load_texture(
+                    "usbuddy-mascot",
+                    egui::ColorImage::from_rgba_unmultiplied(
+                        [w as usize, h as usize],
+                        &img.into_raw(),
+                    ),
+                    egui::TextureOptions::LINEAR,
+                );
+                let mut a = app;
+                a.mascot = Some(tex);
+                return Ok(Box::new(a));
+            }
+            Ok(Box::new(app))
+        }),
     )
 }
