@@ -1,52 +1,99 @@
 # USBuddy
 
-> A private, portable LLM that lives on a USB drive. Plug it into any machine, chat, unplug, walk away. Nothing installs, nothing phones home, nothing stays behind.
+**A portable, offline LLM that lives on a USB drive — and only there.**
+
+You plug the stick into any reasonably modern computer. A chat window
+opens in your browser. You ask the model whatever you want. You unplug.
+The host machine has no record you were ever there beyond the kind of
+incidental traces that any USB drive leaves.
+
+That's the whole product.
+
+No daemons. No phone-home. No background updates. No system tray icon
+clinging on after you quit. The chat surface is a static SPA served by
+a tiny Rust wrapper on localhost; the engine is `llama.cpp`; the model
+weights are on the stick. Nothing else is involved.
 
 ---
 
-## What it does
+## What's in scope, in one paragraph
 
-USBuddy turns a USB stick into a self-contained AI workstation:
+USBuddy is two programs sharing a Rust core. The **installer** runs once
+on a host to format / lay down / populate the drive — it can be heavy
+because the host hosts it. The **runtime** runs ephemerally from the
+USB on any host. The runtime is what has to be small, has to stay
+inside its lane, and has to leave nothing behind. Conflating the two
+breeds bad architecture; keeping them separate is half the reason
+USBuddy exists.
 
-- **Bring your own brain.** A curated model (or any GGUF you drop in) and the
-  llama.cpp engine all live on the drive — not the host.
-- **Localhost only.** The chat UI is a static SPA served by a tiny Rust
-  wrapper at `http://127.0.0.1:8765`. No network calls, no telemetry,
-  no auto-update pings.
-- **Zero install on the host.** Double-click `USBuddy.command` /
-  `.bat` / `.sh` on the drive. The runtime spawns, opens your default
-  browser, and shuts down cleanly when you quit.
-- **Yank-safe.** All drive writes are atomic. Pull the stick mid-session
-  and the worst case is "session ends" — no half-written files, no
-  corrupted state.
+The chat UI is a browser SPA, not Electron or a WebView. The installer
+GUI is `egui`, not GTK/Qt. The catalog of curated models lives in this
+repo and is the integrity root — every entry carries a `sha256` that is
+verified on download and on every launch. Updates are atomic and
+yank-survivable. Saved chats are off by default. Tradeoffs are explicit.
 
-Inspired by the *concept* behind
-[USB-Uncensored-LLM](https://github.com/techjarves/USB-Uncensored-LLM).
-Independent, clean-room build — no code carried over.
+For the full design rationale, the constraints we're respecting, and the
+stacks we ruled out and why, read [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
+
+---
+
+## What you can expect it to do
+
+- **Run a 7-8B Q4 model fully offline** at usable speeds on any
+  reasonably modern laptop. CPU inference is the always-works baseline;
+  Metal / CUDA / Vulkan / ROCm are used opportunistically when present.
+- **Refuse to load a model that won't fit comfortably in RAM.** A model
+  that spills to swap leaks weights to disk — the #1 footprint failure
+  mode. The RAM-fit advisor reads the GGUF header for the real
+  KV-cache shape per model and shows you the math.
+- **Cap context to what the model was actually trained for.** No more
+  arbitrary 32K ceiling on a 128K model.
+- **Survive a mid-write yank.** Every drive write is atomic; the
+  previous version stays bootable; rollback is one file swap.
+- **Idle-unload after 5 minutes** so mlocked weights don't sit in RAM
+  on a borrowed laptop after you walk away. Tunable; can't be disabled
+  by accident.
+- **Optionally remember conversations.** Default off — chats live in
+  RAM until you reload. Flip "Enable memory" to persist them in
+  plaintext under `.usbuddy/chats/` on the stick (with a confirm
+  warning that the stick is now the artifact).
+- **Title saved chats by asking the model itself** for a 2–3 word
+  summary of the first message.
+
+---
+
+## What you need
+
+This isn't a phone app. To get a real experience:
+
+- **A 64-bit host:** macOS (Apple Silicon or Intel), Linux x86_64,
+  Windows x86_64. Linux/Windows ARM64 is built but lower-priority.
+- **At least 16 GB RAM** for a 7-8B Q4 model. 32 GB for headroom or for
+  larger / higher-precision quants. The advisor will tell you the truth
+  for your hardware.
+- **A USB 3.0+ drive** with ~10 GB free. exFAT format. USB 2.0 works
+  but loading a 4-5 GB model off it is slow.
+- **Permission to dismiss Gatekeeper / SmartScreen** the first time you
+  run an unsigned binary on macOS / Windows. There is no Apple Developer
+  ID or Authenticode certificate in scope; the unblock steps are
+  documented in [`docs/VERIFICATION.md`](./docs/VERIFICATION.md).
 
 ---
 
 ## Status
 
-**Pre-release.** No tagged release has shipped yet. The
-[`release.yml`](./.github/workflows/release.yml) workflow is wired and the
-maintainer fires it manually when a build is ready. Until then, build from
-source — see below.
+Pre-release; no tag has been cut. The
+[`release.yml`](./.github/workflows/release.yml) workflow produces
+signed-by-attestation archives for macOS universal2, Linux x86_64, and
+Windows x86_64 with `SHA256SUMS.txt`, a CycloneDX SBOM, and a SLSA build
+provenance attestation. When the first release lands it'll be on the
+[Releases page](https://github.com/skullzarmy/USBuddy/releases).
 
-When releases ship, you'll get signed, attested archives for macOS / Linux
-/ Windows from the
-[Releases page](https://github.com/skullzarmy/USBuddy/releases),
-containing the installer plus the runtime, the SPA, launcher shims, and a
-starter catalog. No `llama-server` or model weights are bundled — the
-installer fetches those at install time.
+Until then, build from source.
 
 ---
 
-## Getting started (from source)
-
-You need [Rust stable](https://rustup.rs) (edition 2024) and a folder
-anywhere on your machine to act as the "drive." A real USB stick isn't
-required for development — any directory works.
+## Try it
 
 ```sh
 git clone https://github.com/skullzarmy/USBuddy.git
@@ -54,144 +101,116 @@ cd USBuddy
 cargo build --release --workspace
 ```
 
-### Three installers, your pick
-
-All three speak to the same Rust core. Use whichever fits how you work.
-
-| Surface                   | Best for                                                |
-| ------------------------- | ------------------------------------------------------- |
-| `usbuddy-installer-gui`   | Desktop window. The default if you just want to click.  |
-| `usbuddy-installer-tui`   | Terminal menu. SSH-friendly, dotfiles-friendly.         |
-| `usbuddy-installer-cli`   | Scriptable. Full command tree under `--help`.           |
+The friendliest entry point is the GUI:
 
 ```sh
-# Pick one:
 cargo run -p usbuddy-installer-gui
-cargo run -p usbuddy-installer-tui
-cargo run -p usbuddy-installer-cli -- --help
 ```
 
-### Full CLI flow against a scratch drive
+It can format a real USB stick or use any folder as a "drive" for
+development. Once it's prepared the drive, the runtime is a separate
+binary that lives on the drive itself — you launch it by double-clicking
+`USBuddy.command` / `.bat` / `.sh` at the drive root.
+
+If you'd rather drive it from the terminal:
 
 ```sh
 DRIVE=/tmp/usbuddy-dev
-
-# Lay down the shadow-tree layout (current.json, .usbuddy/, models/, etc.)
 cargo run -p usbuddy-installer-cli -- drive init "$DRIVE" 0.1.0
-
-# Seed with the curated catalog (real SHA256s pulled from upstream LFS)
 cp fixtures/catalog/official.catalog.json "$DRIVE/catalog.json"
-
-# Download llama.cpp release binaries for every supported host (~60-90 MB),
-# or `--target host` for just the platform you're on.
 cargo run -p usbuddy-installer-cli -- engine install "$DRIVE" --target host
-
-# Copy this build's runtime onto the drive for the current host.
 cargo run -p usbuddy-installer-cli -- install-runtime "$DRIVE"
-
-# Pull a model.
 cargo run -p usbuddy-installer-cli -- model download "$DRIVE" qwen2.5-7b-instruct-q4_k_m
-
-# Run it.
 cargo run -p usbuddy-runtime -- serve --drive "$DRIVE" --open-browser
 ```
 
-That last command serves the chat UI on
-`http://127.0.0.1:8765`, opens your default browser, and starts a
-tray icon for quit/stop. The runtime spawns `llama-server` on port 8766
-when you click **Launch**. After 5 minutes of inactivity it SIGTERMs
-`llama-server` so weights leave mlocked RAM — disable with
-`--idle-timeout-secs 0`.
+`usbuddy-installer-cli --help` prints the full command tree.
+`usbuddy-installer-tui` is the same thing in ratatui form if you live in
+an SSH session.
 
-### Drive-side launchers
+---
 
-`drive init` writes `USBuddy.command` (macOS), `USBuddy.sh` (Linux), and
-`USBuddy.bat` (Windows) to the drive root. Those are what you double-click
-on any host once the stick is set up — they detect OS/arch, locate the
-per-platform runtime under `versions/<active>/bin/<os>-<arch>/`, and exec
-it. On macOS the `.command` script closes its Terminal window when the
-runtime exits cleanly.
+## Why not just use…
+
+- **Ollama** — installs a system service, manages a daemon, writes to
+  system paths. Architecturally the opposite of "no footprint."
+- **LM Studio** — Electron desktop app, host-resident, account-aware.
+  Great product, wrong shape for a USB stick.
+- **llamafile** — bundles weights and engine into one APE binary; AV
+  products dislike it; updates are coarse.
+- **Tauri / Wails / Electron** for the UI — pulls in Chromium or
+  system WebView. The latter on Linux is WebKitGTK, exactly what a
+  zero-system-deps project can't have.
+
+USBuddy is what's left when you remove every assumption that the host
+should know you visited.
 
 ---
 
 ## Models
 
-USBuddy ships a small curated catalog covering the four content profiles
-(see [`docs/CATALOG-SPEC.md`](./docs/CATALOG-SPEC.md)):
+Five curated entries ship in
+[`fixtures/catalog/official.catalog.json`](./fixtures/catalog/official.catalog.json),
+spanning Qwen 2.5 7B Instruct, Mistral 7B v0.3, Llama 3.1 8B (gated),
+Qwen 2.5 Coder 7B, and Dolphin 2.9.4. Any `.gguf` you drop into the
+drive's `models/` directory is also discovered and shows up as
+`community-unverified` in the picker.
 
-| Profile               | Means                                                                                  |
-| --------------------- | -------------------------------------------------------------------------------------- |
-| `aligned`             | Standard instruct + safety training. Default, no warning.                              |
-| `minimally-aligned`   | Instruct, with refusal training removed/reduced (Dolphin, Hermes, Nous).               |
-| `base`                | Pretrained foundation, no instruct tuning. Will complete anything.                     |
-| `code`                | Code-specialized (Qwen Coder, DeepSeek Coder).                                         |
-| `community-unverified`| Any `.gguf` you drop in `/models/` on the drive. Persistent badge in the picker.       |
-
-The picker enforces a **RAM-fit advisor** on every launch: green / yellow /
-red bands measured against available RAM and the model's real KV-cache
-size (parsed from the GGUF header). Red refuses to load — swap-to-disk is
-the #1 footprint leak.
-
-Saved chats are **off by default** (incognito). Toggle "Enable memory"
-in the chat header to persist conversations under `.usbuddy/chats/` on
-the drive in plaintext, with a one-time warning that the stick becomes
-the artifact at that point.
-
----
-
-## How it's built
-
-Two programs with opposite constraints, sharing one Rust core:
-
-- **The installer** — runs once on the host, can be heavier (CLI / TUI / GUI).
-- **The runtime** — runs ephemerally from the USB on any host, must be
-  tiny, offline by default, leave no footprint.
-
-Architecture decisions (exFAT, shadow-tree `versions/`, yank-safety,
-mlock posture, no auto-updates, no system WebView dependencies) are
-written up in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md). The
-runtime serves a static SPA opened in the user's default browser; the
-installer GUI uses `egui` precisely to avoid GTK / WebKit / Qt /
-WebView dependencies.
-
-Further reading:
-
-- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — full design rationale.
-- [`docs/CATALOG-SPEC.md`](./docs/CATALOG-SPEC.md) — catalog schema.
-- [`docs/FOOTPRINT.md`](./docs/FOOTPRINT.md) — honest accounting of
-  residual host traces (Spotlight, Prefetch, journald, etc.).
-- [`docs/VERIFICATION.md`](./docs/VERIFICATION.md) — how to verify what
-  a release shipped.
+The catalog schema, content profiles (`aligned`, `minimally-aligned`,
+`base`, `code`, `vision`, `community-unverified`), and the integrity
+contract are documented in
+[`docs/CATALOG-SPEC.md`](./docs/CATALOG-SPEC.md).
 
 ---
 
 ## Development
 
 ```sh
-# Full validation (run before pushing)
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 npm --prefix ui/web run test
-
-# Single test
-cargo test -p usbuddy-core <name>
 ```
 
 The web UI under `ui/web/src/` is embedded into the runtime binary at
-compile time via `include_str!` — a plain `cargo build` already bundles
-it. The `npm` scripts exist only for linting and bundle-validation tests.
+compile time via `include_str!`; a plain `cargo build` already bundles
+it. The `npm` scripts only exist for lint and bundle-presence checks.
 
-Maintainers regenerate the curated catalog from `seed.toml`:
+Maintainers regenerate the curated catalog from `seed.toml` by fetching
+SHA256 + size from Hugging Face's LFS pointer API (no model bytes are
+downloaded):
 
 ```sh
 cargo run -p xtask -- catalog-fetch
 HF_TOKEN=hf_xxx cargo run -p xtask -- catalog-fetch   # for gated entries
 ```
 
+Project conventions, the workspace map, and the load-bearing invariants
+are in [`CLAUDE.md`](./CLAUDE.md) (it doubles as a contributor cheat
+sheet — read it before opening a PR).
+
+---
+
+## Honest accounting
+
+USBuddy aspires to leave no host-side footprint. "No footprint" is the
+goal; "no intentional persistence; minimize incidental traces; publish
+exactly what remains" is the honest version. Spotlight indexing,
+Windows Prefetch, journald, Defender SmartScreen telemetry, and your
+own browser history will all carry some signal that you used a USB
+drive recently. The per-OS accounting is in
+[`docs/FOOTPRINT.md`](./docs/FOOTPRINT.md).
+
 ---
 
 ## License
 
-[Apache-2.0](./LICENSE). See also [`NOTICE`](./NOTICE) for upstream
-attribution requirements (llama.cpp, model weights).
+[Apache-2.0](./LICENSE). Upstream attribution and licensing for
+`llama.cpp` and bundled-by-reference model weights is in
+[`NOTICE`](./NOTICE) and surfaced in the UI's Credits screen.
+
+---
+
+*USBuddy is inspired by the concept behind
+[USB-Uncensored-LLM](https://github.com/techjarves/USB-Uncensored-LLM)
+— independent clean-room build, no code carried over.*
