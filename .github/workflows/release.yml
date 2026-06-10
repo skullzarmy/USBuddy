@@ -207,7 +207,18 @@ jobs:
           path: artifacts
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install cargo-cyclonedx --locked
-      - run: cargo cyclonedx --workspace --all --output-file SBOM.cdx.json
+      - name: Generate per-crate SBOMs and bundle
+        shell: bash
+        run: |
+          # cargo-cyclonedx 0.5.x has no --workspace/--all flags — it
+          # auto-walks workspace members and writes one SBOM per crate at
+          # the crate root. Collect them into a single tarball so the
+          # release attaches one signable artifact.
+          cargo cyclonedx --format json
+          mkdir -p sbom
+          find crates xtask -name "*.cdx.json" -exec cp {} sbom/ \;
+          tar czf SBOM.cdx.tgz -C sbom .
+          ls -la sbom SBOM.cdx.tgz
       - shell: bash
         run: |
           find artifacts -type f -maxdepth 2 | sort | xargs sha256sum > SHA256SUMS.txt
@@ -216,7 +227,7 @@ jobs:
           name: release-bundle
           path: |
             artifacts
-            SBOM.cdx.json
+            SBOM.cdx.tgz
             SHA256SUMS.txt
 
   release:
