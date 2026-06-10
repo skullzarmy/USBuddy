@@ -13,7 +13,7 @@ use anyhow::Context;
 use axum::{
     Json, Router,
     body::Body,
-    extract::State,
+    extract::{Path as AxumPath, State},
     http::{HeaderMap, Method, StatusCode, Uri, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -25,6 +25,7 @@ use tokio::sync::Notify;
 use usbuddy_core::{
     catalog::{Advisory, Catalog, ModelEntry, load_catalog},
     compiled_version,
+    gguf::ArchMeta,
     layout::{DriveLayout, DropInModel},
     platform::detect_platform,
     ram::{FitBand, RamDecision, RamEstimateInput, assess_fit, detect_memory},
@@ -54,6 +55,7 @@ const ICON_PNG: &[u8] = include_bytes!(concat!(
     "/assets/usbuddy-icon.png"
 ));
 
+mod chats;
 mod tray;
 
 /// Port used internally by llama-server; separate from the runtime's own port.
@@ -66,6 +68,16 @@ const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
 
 /// How often the idle-watch task wakes up to check the last-activity stamp.
 const IDLE_CHECK_INTERVAL_SECS: u64 = 15;
+
+/// How long /api/launch will wait for llama-server to become healthy before
+/// giving up and reporting the failure to the UI. A cold load of a 7-8B Q4
+/// model off USB 3.0 is typically 5–30s; an 8B Q8 off a slow stick can push
+/// past 60s. Five minutes is a deliberately generous ceiling — past that
+/// something is genuinely wrong (corrupt weights, wrong-arch binary).
+const LLAMA_READY_TIMEOUT_SECS: u64 = 300;
+
+/// Poll interval against llama-server's /health endpoint while it's loading.
+const LLAMA_READY_POLL_MS: u64 = 250;
 
 #[derive(Debug, Parser)]
 #[command(name = "usbuddy-runtime", version = compiled_version(), about = "USBuddy portable runtime wrapper")]
@@ -247,6 +259,12 @@ async fn serve_http(
         .route("/api/shutdown", post(api_shutdown))
         .route("/api/chat", axum::routing::any(api_chat_proxy))
         .route("/api/chat/{*rest}", axum::routing::any(api_chat_proxy))
+        .route("/api/prefs", get(api_get_prefs).put(api_put_prefs))
+        .route("/api/chats", get(api_list_chats))
+        .route(
+            "/api/chats/{id}",
+            get(api_get_chat).put(api_put_chat).delete(api_delete_chat),
+        )
         .with_state(state.clone());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -303,6 +321,22 @@ fn status_payload(state: &RuntimeState, message: &str) -> RuntimeStatus {
         .map(|g| g.is_some())
         .unwrap_or(false);
 
+    // Catalog models that have already been downloaded get a real arch_meta
+    // probe (so the UI can show actual KV-per-token instead of a fixed
+    // constant); undownloaded entries return None and the UI falls back to a
+    // conservative heuristic.
+    let catalog_arch_meta: Vec<Option<ArchMeta>> = catalog_models
+        .iter()
+        .map(|m| {
+            let path = state.layout.models_dir().join(&m.file_name);
+            if path.exists() {
+                usbuddy_core::gguf::read_arch_meta(&path)
+            } else {
+                None
+            }
+        })
+        .collect();
+
     RuntimeStatus {
         message: message.into(),
         version: compiled_version().into(),
@@ -314,18 +348,24 @@ fn status_payload(state: &RuntimeState, message: &str) -> RuntimeStatus {
         ram: memory,
         ram_previews: catalog_models
             .iter()
-            .map(|m| {
+            .zip(catalog_arch_meta.iter())
+            .map(|(m, arch)| {
+                let kv_bytes_per_token = arch
+                    .as_ref()
+                    .map(|a| a.kv_bytes_per_token_f16())
+                    .unwrap_or(524_288); // non-GQA worst case as a safe fallback
                 assess_fit(
                     memory,
                     RamEstimateInput {
                         model_bytes: m.size_bytes,
                         context_tokens: 4_096,
-                        kv_bytes_per_token: 131_072,
+                        kv_bytes_per_token,
                         runtime_overhead_bytes: 512 * 1024 * 1024,
                     },
                 )
             })
             .collect(),
+        catalog_arch_meta,
         llama_running,
         llama_port: LLAMA_SERVER_PORT,
         idle_timeout_secs: state.idle_timeout_secs,
@@ -440,6 +480,19 @@ async fn api_launch(
 
     *state.llama_process.lock().unwrap() = Some(child);
 
+    // Block until llama-server's /health reports OK. Without this, the UI
+    // unlocks the chat input the instant the process spawns — but
+    // llama-server binds its port ~3ms in and only finishes loading weights
+    // 5–30s later. Any chat request in that window gets HTTP 503 with
+    // {"error":{"message":"Loading model"}}, which the UI renders verbatim.
+    // We hold the request open until the engine is actually serving.
+    if let Err(reason) = wait_for_llama_ready(&state.llama_process).await {
+        kill_llama_server(&state.llama_process);
+        return Err(AppError::bad_gateway(format!(
+            "llama-server failed to become ready: {reason}"
+        )));
+    }
+
     let band_label = match decision.band {
         FitBand::Green => "green",
         FitBand::Yellow => "yellow",
@@ -452,6 +505,65 @@ async fn api_launch(
         llama_port: LLAMA_SERVER_PORT,
         ram_band: band_label.into(),
     }))
+}
+
+/// Polls `/health` on the spawned llama-server until it returns 200, the
+/// process exits (load failure), or [`LLAMA_READY_TIMEOUT_SECS`] elapses.
+///
+/// llama.cpp's /health contract:
+/// - 503 + `{"status":"loading model"}` while loading weights
+/// - 200 + `{"status":"ok"}` once serving
+/// - 500 on internal failure
+///
+/// A connect-refused before the port binds is also treated as "still
+/// starting." Any exit by the child process is fatal — we report it.
+async fn wait_for_llama_ready(process: &Mutex<Option<Child>>) -> Result<(), String> {
+    let health_url = format!("http://127.0.0.1:{LLAMA_SERVER_PORT}/health");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|e| format!("build health client: {e}"))?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(LLAMA_READY_TIMEOUT_SECS);
+
+    loop {
+        // Did the child die? If so, no point polling — surface the real cause.
+        {
+            let mut guard = process
+                .lock()
+                .map_err(|_| "process mutex poisoned".to_string())?;
+            match guard.as_mut() {
+                Some(child) => match child.try_wait() {
+                    Ok(Some(status)) => {
+                        return Err(format!(
+                            "llama-server exited before becoming ready (status: {status}). \
+                             Check the runtime terminal for its error output."
+                        ));
+                    }
+                    Ok(None) => { /* still running, fall through to health probe */ }
+                    Err(e) => return Err(format!("inspecting llama-server: {e}")),
+                },
+                None => {
+                    return Err("llama-server was killed before becoming ready".into());
+                }
+            }
+        }
+
+        match client.get(&health_url).send().await {
+            Ok(resp) if resp.status().is_success() => return Ok(()),
+            // 503 = still loading; anything else non-fatal we just retry.
+            Ok(_) => {}
+            Err(_) => { /* connect refused / timeout — port not bound yet */ }
+        }
+
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "timed out after {}s waiting for /health. The model may be too large \
+                 for available RAM, the GGUF may be corrupt, or USB I/O is unusually slow.",
+                LLAMA_READY_TIMEOUT_SECS
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(LLAMA_READY_POLL_MS)).await;
+    }
 }
 
 async fn api_stop(State(state): State<Arc<RuntimeState>>) -> Json<serde_json::Value> {
@@ -520,6 +632,70 @@ async fn api_chat_proxy(
     *response.status_mut() = status;
     *response.headers_mut() = resp_headers;
     Ok(response)
+}
+
+// ---------------------------------------------------------------------------
+// Route handlers — prefs & chats
+// ---------------------------------------------------------------------------
+
+async fn api_get_prefs(State(state): State<Arc<RuntimeState>>) -> Json<chats::RuntimePrefs> {
+    Json(chats::RuntimePrefs::load(
+        &state.layout.runtime_prefs_path(),
+    ))
+}
+
+async fn api_put_prefs(
+    State(state): State<Arc<RuntimeState>>,
+    Json(prefs): Json<chats::RuntimePrefs>,
+) -> Result<Json<chats::RuntimePrefs>, AppError> {
+    prefs
+        .save(&state.layout.runtime_prefs_path())
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    Ok(Json(prefs))
+}
+
+async fn api_list_chats(
+    State(state): State<Arc<RuntimeState>>,
+) -> Result<Json<Vec<chats::ChatSummary>>, AppError> {
+    chats::list(&state.layout.chats_dir())
+        .map(Json)
+        .map_err(|e| AppError::internal(e.to_string()))
+}
+
+async fn api_get_chat(
+    State(state): State<Arc<RuntimeState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<chats::Chat>, AppError> {
+    match chats::read(&state.layout.chats_dir(), &id) {
+        Ok(c) => Ok(Json(c)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(AppError::bad_request("chat not found"))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
+            Err(AppError::bad_request(e.to_string()))
+        }
+        Err(e) => Err(AppError::internal(e.to_string())),
+    }
+}
+
+async fn api_put_chat(
+    State(state): State<Arc<RuntimeState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(mut chat): Json<chats::Chat>,
+) -> Result<Json<chats::Chat>, AppError> {
+    // Don't let a mismatched body silently save under the URL id.
+    chat.id = id;
+    chats::write(&state.layout.chats_dir(), &chat)
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    Ok(Json(chat))
+}
+
+async fn api_delete_chat(
+    State(state): State<Arc<RuntimeState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    chats::delete(&state.layout.chats_dir(), &id).map_err(|e| AppError::internal(e.to_string()))?;
+    Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
 // ---------------------------------------------------------------------------
@@ -696,6 +872,9 @@ struct RuntimeStatus {
     advisories: Vec<Advisory>,
     ram: usbuddy_core::ram::MemorySnapshot,
     ram_previews: Vec<RamDecision>,
+    /// Parallel to `models` — Some(meta) when the model is on disk and we
+    /// could parse its GGUF header, None when undownloaded or non-GGUF.
+    catalog_arch_meta: Vec<Option<ArchMeta>>,
     llama_running: bool,
     llama_port: u16,
     idle_timeout_secs: u64,

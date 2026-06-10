@@ -61,7 +61,23 @@ if [ ! -x "$BIN" ]; then
   fi
   exit 1
 fi
-exec "$BIN" serve --drive "$DIR" --open-browser
+
+# Capture this Terminal session's tty so we can close *just this window*
+# (not the user's other Terminal windows) when the runtime exits cleanly.
+TTY="$(tty 2>/dev/null || true)"
+
+RUNTIME_EXIT=0
+"$BIN" serve --drive "$DIR" --open-browser || RUNTIME_EXIT=$?
+
+# On macOS, close the Terminal window we opened — but only if the runtime
+# exited cleanly. A crash exit leaves the window open so the user can read
+# the error. Best-effort: silently skipped if Terminal automation is
+# denied, the script wasn't run from Terminal.app, or the tty wasn't
+# resolvable. (Linux terminal emulators handle close-on-exit themselves.)
+if [ "$OSDIR" = "macos" ] && [ "$RUNTIME_EXIT" -eq 0 ] && [ -n "$TTY" ]; then
+  osascript -e "tell application \"Terminal\" to close (every window whose tty is \"$TTY\")" >/dev/null 2>&1 || true
+fi
+exit "$RUNTIME_EXIT"
 "#;
 
 /// Windows launcher. Reads the active version out of `current.json` with
@@ -143,6 +159,16 @@ pub struct DropInModel {
     pub path: PathBuf,
     pub display_name: String,
     pub profile: String,
+    /// File size in bytes — used by the runtime UI's RAM-fit badge so it
+    /// can show green/yellow/red instead of "unknown size" for drop-ins.
+    /// 0 if the metadata call failed (network drive vanished, etc.).
+    #[serde(default)]
+    pub size_bytes: u64,
+    /// Parsed GGUF architecture metadata (layers, attention shape, trained
+    /// context length). `None` when the file isn't valid GGUF or when the
+    /// header read failed — the UI falls back to a conservative heuristic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch_meta: Option<crate::gguf::ArchMeta>,
 }
 
 #[derive(Debug, Clone)]
@@ -205,6 +231,14 @@ impl DriveLayout {
 
     pub fn hf_token_path(&self) -> PathBuf {
         self.usbuddy_dir().join("hf-token")
+    }
+
+    pub fn runtime_prefs_path(&self) -> PathBuf {
+        self.usbuddy_dir().join("runtime-prefs.toml")
+    }
+
+    pub fn chats_dir(&self) -> PathBuf {
+        self.usbuddy_dir().join("chats")
     }
 
     pub fn initialize_structure(&self, active_version: &str) -> Result<()> {
@@ -344,10 +378,14 @@ impl DriveLayout {
                     .and_then(|stem| stem.to_str())
                     .unwrap_or("unknown-model")
                     .replace('-', " ");
+                let size_bytes = fs::metadata(entry.path()).map(|m| m.len()).unwrap_or(0);
+                let arch_meta = crate::gguf::read_arch_meta(entry.path());
                 discovered.push(DropInModel {
                     path: entry.path().to_path_buf(),
                     display_name,
                     profile: "community-unverified".into(),
+                    size_bytes,
+                    arch_meta,
                 });
             }
         }

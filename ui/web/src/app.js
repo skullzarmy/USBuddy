@@ -11,6 +11,20 @@ let inflight = null; // AbortController for the active /api/chat request
 let activeStream = null; // Promise of the in-flight streamReply (or null)
 const chatHistory = [];
 
+// Chat persistence + incognito state. Default is incognito (no writes to the
+// drive); the user opts in via the "Enable memory" toggle. Overwritten by
+// /api/prefs at boot.
+let saveChats = false;
+let currentChatId = null;     // UUID of the chat being persisted, if any
+let currentChatCreatedAt = 0; // epoch seconds; preserved across saves
+let currentChatAiTitled = false; // true once we've upgraded the slice-title to an AI summary (or loaded an existing chat)
+let savedChats = [];          // summaries, newest first
+
+// Scroll-pinning: only auto-scroll on new tokens if the user is already near
+// the bottom. Reset to true on send so a fresh prompt always shows its reply.
+let stickToBottom = true;
+const STICK_THRESHOLD_PX = 40;
+
 // ---------------------------------------------------------------------------
 // DOM
 // ---------------------------------------------------------------------------
@@ -18,8 +32,7 @@ const chatHistory = [];
 const $ = (id) => document.getElementById(id);
 const app = document.querySelector('.app');
 
-const sidebarToggle = $('sidebar-toggle');
-const sidebarShow = $('sidebar-show');
+const sidebarToggleBtn = $('sidebar-toggle-btn');
 const modelSelect = $('model-select');
 const noModels = $('no-models');
 const contextSlider = $('context-slider');
@@ -44,6 +57,9 @@ const stopGenBtn = $('stop-gen-btn');
 const statusLine = $('status-line');
 const newChatBtn = $('new-chat');
 const quitBtn = $('quit-btn');
+const incognitoToggle = $('incognito-toggle');
+const chatsList = $('chats-list');
+const chatsEmpty = $('chats-empty');
 
 // ---------------------------------------------------------------------------
 // Boot
@@ -51,11 +67,39 @@ const quitBtn = $('quit-btn');
 
 async function boot() {
   try {
-    const payload = await fetchStatus();
+    const [payload, prefs, chats] = await Promise.all([
+      fetchStatus(),
+      fetchPrefs(),
+      fetchChats(),
+    ]);
     applyStatus(payload);
     syncLlamaState(payload.llama_running);
+    saveChats = !!prefs.save_chats;
+    syncIncognitoUi();
+    savedChats = chats;
+    renderChatsList();
   } catch (err) {
     statusLine.textContent = `Runtime API unavailable: ${err.message}`;
+  }
+}
+
+async function fetchPrefs() {
+  try {
+    const r = await fetch('/api/prefs');
+    if (!r.ok) return { save_chats: false };
+    return await r.json();
+  } catch {
+    return { save_chats: false };
+  }
+}
+
+async function fetchChats() {
+  try {
+    const r = await fetch('/api/chats');
+    if (!r.ok) return [];
+    return await r.json();
+  } catch {
+    return [];
   }
 }
 
@@ -80,7 +124,12 @@ function applyStatus(payload) {
   ramInfoEl.textContent = `${availGib} / ${totalGib} GiB RAM`;
 
   renderAdvisories(payload.advisories || []);
-  renderModelOptions(payload.models, payload.drop_in_models, payload.ram_previews);
+  renderModelOptions(
+    payload.models,
+    payload.drop_in_models,
+    payload.ram_previews,
+    payload.catalog_arch_meta || [],
+  );
 }
 
 function renderAdvisories(advisories) {
@@ -97,20 +146,22 @@ function renderAdvisories(advisories) {
   }
 }
 
-function renderModelOptions(catalogModels, dropIns, ramPreviews) {
+function renderModelOptions(catalogModels, dropIns, ramPreviews, catalogArchMeta) {
   const items = [
     ...catalogModels.map((m, i) => ({
       id: m.id,
       label: m.display_name,
       profile: m.profile,
       sizeBytes: m.size_bytes,
+      arch: catalogArchMeta?.[i] ?? null,
       ram: ramPreviews?.[i] ?? null,
     })),
     ...dropIns.map((d) => ({
       id: (d.path.split(/[\\/]/).pop() ?? d.display_name).replace(/\.gguf$/i, ''),
       label: d.display_name,
       profile: d.profile,
-      sizeBytes: 0,
+      sizeBytes: d.size_bytes || 0,
+      arch: d.arch_meta || null,
       ram: null,
     })),
   ];
@@ -132,6 +183,9 @@ function renderModelOptions(catalogModels, dropIns, ramPreviews) {
     const sz = m.sizeBytes ? ` · ${(m.sizeBytes / 1024 ** 3).toFixed(1)} GiB` : '';
     opt.textContent = `${m.label} (${m.profile}${sz})`;
     opt.dataset.sizeBytes = m.sizeBytes || 0;
+    if (m.arch) {
+      opt.dataset.archJson = JSON.stringify(m.arch);
+    }
     modelSelect.appendChild(opt);
   }
 
@@ -139,11 +193,44 @@ function renderModelOptions(catalogModels, dropIns, ramPreviews) {
     selectedModelId = items[0].id;
   }
   modelSelect.value = selectedModelId;
+  syncContextSliderToModel();
   updateRamBadge();
+}
+
+/// Conservative KV bytes/token when we couldn't parse the GGUF header.
+/// Assumes non-GQA (full KV heads). It's better for the advisor to err on
+/// the side of "tight" than to silently green-light a model that will OOM.
+const FALLBACK_KV_BYTES_PER_TOKEN = 524_288;
+
+function selectedArch() {
+  const opt = modelSelect.selectedOptions[0];
+  if (!opt || !opt.dataset.archJson) return null;
+  try {
+    return JSON.parse(opt.dataset.archJson);
+  } catch {
+    return null;
+  }
+}
+
+/// Caps the slider to the model's trained context length when we know it.
+/// Drops the value if the user had it set higher than the new max. Falls
+/// back to 32K when arch is unknown so the user can still push it.
+function syncContextSliderToModel() {
+  const arch = selectedArch();
+  const cap = arch?.context_length || 32_768;
+  // Snap the slider step to 512 but ensure the cap itself is reachable.
+  const step = 512;
+  const snappedCap = Math.max(step, Math.floor(cap / step) * step);
+  contextSlider.max = String(snappedCap);
+  if (Number(contextSlider.value) > snappedCap) {
+    contextSlider.value = String(snappedCap);
+  }
+  contextValue.textContent = Number(contextSlider.value).toLocaleString();
 }
 
 modelSelect.addEventListener('change', () => {
   selectedModelId = modelSelect.value;
+  syncContextSliderToModel();
   updateRamBadge();
 });
 
@@ -165,8 +252,10 @@ function updateRamBadge() {
     ramBadge.className = 'ram-badge';
     return;
   }
+  const arch = selectedArch();
+  const kvPerToken = arch ? archKvBytesPerTokenF16(arch) : FALLBACK_KV_BYTES_PER_TOKEN;
   const ctx = Number(contextSlider.value);
-  const kv = ctx * 131_072;
+  const kv = ctx * kvPerToken;
   const overhead = 512 * 1024 * 1024;
   const required = sizeBytes + kv + overhead;
   const avail = state.ram.available_bytes;
@@ -186,6 +275,21 @@ function updateRamBadge() {
   }
   ramBadge.textContent = label;
   ramBadge.className = `ram-badge band-${band}`;
+  // Transparent breakdown — hover the badge to see the math the advisor used.
+  const gib = (b) => (b / 1024 ** 3).toFixed(2);
+  const archNote = arch
+    ? `${arch.architecture} · ${arch.block_count}L · ${arch.head_count_kv}/${arch.head_count} KV/heads · ${kvPerToken.toLocaleString()} B/tok`
+    : `unknown arch · assuming ${kvPerToken.toLocaleString()} B/tok (non-GQA worst case)`;
+  ramBadge.title =
+    `model ${gib(sizeBytes)} GiB + KV ${gib(kv)} GiB (${ctx.toLocaleString()} ctx) ` +
+    `+ overhead ${gib(overhead)} GiB = ${gib(required)} GiB needed\n` +
+    `available ${gib(avail)} GiB → ${gib(remaining)} GiB headroom (margin ${(margin * 100).toFixed(0)}%)\n` +
+    archNote;
+}
+
+function archKvBytesPerTokenF16(arch) {
+  const headDim = Math.floor(arch.embedding_length / Math.max(1, arch.head_count));
+  return 2 * arch.block_count * arch.head_count_kv * headDim * 2;
 }
 
 // ---------------------------------------------------------------------------
@@ -253,12 +357,11 @@ function syncLlamaState(running) {
 // Sidebar toggle
 // ---------------------------------------------------------------------------
 
-sidebarToggle.addEventListener('click', () => {
-  app.classList.add('sidebar-hidden');
-});
-sidebarShow.addEventListener('click', () => {
-  app.classList.remove('sidebar-hidden');
-  sidebarShow.hidden = true;
+sidebarToggleBtn.addEventListener('click', () => {
+  const hidden = app.classList.toggle('sidebar-hidden');
+  sidebarToggleBtn.title = hidden ? 'Show sidebar' : 'Hide sidebar';
+  sidebarToggleBtn.setAttribute('aria-label', hidden ? 'Show sidebar' : 'Hide sidebar');
+  sidebarToggleBtn.setAttribute('aria-expanded', String(!hidden));
 });
 
 newChatBtn.addEventListener('click', async () => {
@@ -270,11 +373,20 @@ newChatBtn.addEventListener('click', async () => {
       /* handled in streamReply */
     }
   }
+  resetActiveChat();
+});
+
+function resetActiveChat() {
   chatHistory.length = 0;
   chatMessages.innerHTML = '';
   chatMessages.appendChild(emptyState);
   emptyState.hidden = false;
-});
+  currentChatId = null;
+  currentChatCreatedAt = 0;
+  currentChatAiTitled = false;
+  stickToBottom = true;
+  highlightActiveChat();
+}
 
 // ---------------------------------------------------------------------------
 // Chat
@@ -314,6 +426,9 @@ chatForm.addEventListener('submit', async (e) => {
     }
   }
 
+  // A fresh send means the user is committing to this turn — always show its
+  // reply, even if they had scrolled away from a previous one.
+  stickToBottom = true;
   appendMessage('user', text);
   chatHistory.push({ role: 'user', content: text });
   activeStream = streamReply();
@@ -337,9 +452,26 @@ function appendMessage(role, content) {
   wireCopyButtons(body);
   wrap.append(role_el, body);
   chatMessages.appendChild(wrap);
-  chatMessages.scrollTop = chatMessages.scrollHeight;
+  maybeScrollToBottom();
   return body;
 }
+
+function isNearBottom() {
+  return (
+    chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight <
+    STICK_THRESHOLD_PX
+  );
+}
+
+function maybeScrollToBottom() {
+  if (stickToBottom) {
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+}
+
+chatMessages.addEventListener('scroll', () => {
+  stickToBottom = isNearBottom();
+});
 
 stopGenBtn.addEventListener('click', () => {
   if (inflight) inflight.abort();
@@ -374,7 +506,7 @@ async function streamReply() {
   const renderInto = (text) => {
     body.innerHTML = renderMarkdown(text) + '<span class="cursor"></span>';
     wireCopyButtons(body);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+    maybeScrollToBottom();
   };
 
   inflight = new AbortController();
@@ -451,7 +583,8 @@ async function streamReply() {
     }
     inflight = null;
     setStreaming(false);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+    maybeScrollToBottom();
+    await persistCurrentChat();
   }
 }
 
@@ -471,6 +604,282 @@ function escapeHtml(s) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+// ---------------------------------------------------------------------------
+// Chat persistence + incognito
+// ---------------------------------------------------------------------------
+
+function syncIncognitoUi() {
+  // Button labels are action verbs — they describe what clicking will DO,
+  // not the current state. "Go incognito" means memory is currently on and
+  // clicking turns it off; "Enable memory" means the opposite.
+  const saving = saveChats;
+  incognitoToggle.classList.toggle('saving', saving);
+  incognitoToggle.querySelector('.incognito-label').textContent = saving
+    ? 'Go incognito'
+    : 'Enable memory';
+  incognitoToggle.querySelector('.incognito-icon').textContent = saving ? '🕶️' : '💾';
+  incognitoToggle.setAttribute('aria-label', saving ? 'Go incognito' : 'Enable memory');
+  incognitoToggle.title = saving
+    ? 'Stop saving chats to the drive — current chat will live only in RAM.'
+    : 'Start saving chats to the drive under .usbuddy/chats/.';
+}
+
+incognitoToggle.addEventListener('click', async () => {
+  const next = !saveChats;
+  if (next) {
+    const ok = confirm(
+      'Save conversations to the drive?\n\n' +
+        'Saved chats live under .usbuddy/chats/ on this USB stick in plaintext. ' +
+        'Anyone who plugs the stick into a computer can read them. ' +
+        'Keep incognito on if you are not sure.'
+    );
+    if (!ok) return;
+  }
+  saveChats = next;
+  syncIncognitoUi();
+  try {
+    await fetch('/api/prefs', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ save_chats: saveChats }),
+    });
+  } catch {
+    /* best-effort; UI state remains the source of truth this session */
+  }
+  // If the user just enabled saving mid-conversation, persist what's there.
+  if (saveChats && chatHistory.length > 0) {
+    await persistCurrentChat();
+    await refreshChats();
+  }
+});
+
+async function persistCurrentChat() {
+  if (!saveChats) return;
+  if (chatHistory.length === 0) return;
+  const now = Math.floor(Date.now() / 1000);
+  const isNewChat = !currentChatId;
+  if (isNewChat) {
+    currentChatId = (crypto.randomUUID && crypto.randomUUID()) || fallbackUuid();
+    currentChatCreatedAt = now;
+  }
+  const firstUser = chatHistory.find((m) => m.role === 'user');
+  // Initial title is a naive slice — gives the sidebar something to show
+  // immediately while the AI title call (below) runs out of band.
+  const fallbackTitle =
+    (firstUser?.content || 'Untitled').slice(0, 80).replace(/\s+/g, ' ').trim();
+
+  await saveChatRecord({
+    id: currentChatId,
+    title: fallbackTitle,
+    model_id: selectedModelId,
+    created_epoch_secs: currentChatCreatedAt,
+    updated_epoch_secs: now,
+    messages: chatHistory.map((m) => ({ role: m.role, content: m.content })),
+  });
+
+  // Once the chat exists on disk with a placeholder, upgrade the title
+  // asynchronously with a small model call. We only do this once per chat
+  // (currentChatAiTitled gate) and only when llama is up and there's a
+  // user message to summarize.
+  if (!currentChatAiTitled && llamaRunning && firstUser?.content) {
+    const aiTitle = await generateChatTitle(firstUser.content);
+    currentChatAiTitled = true;
+    if (aiTitle && currentChatId && saveChats) {
+      await saveChatRecord({
+        id: currentChatId,
+        title: aiTitle,
+        model_id: selectedModelId,
+        created_epoch_secs: currentChatCreatedAt,
+        updated_epoch_secs: now,
+        messages: chatHistory.map((m) => ({ role: m.role, content: m.content })),
+      });
+    }
+  }
+}
+
+async function saveChatRecord(chat) {
+  try {
+    const r = await fetch(`/api/chats/${chat.id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(chat),
+    });
+    if (!r.ok) return;
+  } catch {
+    /* drive may be gone — next refresh will reconcile */
+    return;
+  }
+  // Bump the sidebar summary so this chat floats to the top without a full
+  // reload. Newest-first ordering matches the server.
+  const filtered = savedChats.filter((c) => c.id !== chat.id);
+  savedChats = [
+    {
+      id: chat.id,
+      title: chat.title,
+      model_id: chat.model_id,
+      updated_epoch_secs: chat.updated_epoch_secs,
+    },
+    ...filtered,
+  ];
+  renderChatsList();
+}
+
+/// Asks the active llama-server for a 2-3 word title summarizing the user's
+/// opening message. Returns null on any failure — the slice fallback already
+/// in place stays in that case. Times out after 20s so a wedged engine
+/// never blocks the save loop indefinitely.
+async function generateChatTitle(firstUserMessage) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const r = await fetch('/api/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: selectedModelId,
+        stream: false,
+        temperature: 0.3,
+        max_tokens: 16,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You write a concise 2-3 word title summarizing the user message. ' +
+              'Reply with ONLY the title — no quotes, no punctuation, no preamble, ' +
+              'no explanation. Examples: "fix nginx config", "vacation ideas", ' +
+              '"rust async basics".',
+          },
+          { role: 'user', content: firstUserMessage },
+        ],
+      }),
+      signal: controller.signal,
+    });
+    if (!r.ok) return null;
+    const data = await r.json();
+    const raw = data.choices?.[0]?.message?.content;
+    if (!raw) return null;
+    return cleanTitle(raw);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function cleanTitle(raw) {
+  const cleaned = String(raw)
+    .replace(/<think>[\s\S]*?<\/think>/gi, '') // strip CoT tags if model adds them
+    .replace(/^["'`*_]+|["'`*_]+$/g, '')        // strip wrapping quotes / markdown
+    .replace(/[.!?,;:]+$/g, '')                 // strip trailing punctuation
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return null;
+  // Cap at 4 words; smaller models sometimes ramble past the instruction.
+  return cleaned.split(/\s+/).slice(0, 4).join(' ');
+}
+
+function fallbackUuid() {
+  // crypto.randomUUID is universal in modern browsers, but a defensive
+  // fallback keeps things working in oddball embedded WebViews.
+  const r = crypto.getRandomValues(new Uint8Array(16));
+  r[6] = (r[6] & 0x0f) | 0x40;
+  r[8] = (r[8] & 0x3f) | 0x80;
+  const h = [...r].map((b) => b.toString(16).padStart(2, '0'));
+  return `${h.slice(0, 4).join('')}-${h.slice(4, 6).join('')}-${h.slice(6, 8).join('')}-${h.slice(8, 10).join('')}-${h.slice(10, 16).join('')}`;
+}
+
+async function refreshChats() {
+  savedChats = await fetchChats();
+  renderChatsList();
+}
+
+function renderChatsList() {
+  chatsList.innerHTML = '';
+  if (!savedChats.length) {
+    chatsEmpty.hidden = false;
+    return;
+  }
+  chatsEmpty.hidden = true;
+  for (const summary of savedChats) {
+    const li = document.createElement('li');
+    li.dataset.chatId = summary.id;
+    if (summary.id === currentChatId) li.classList.add('active');
+
+    const titleEl = document.createElement('span');
+    titleEl.className = 'chat-title-text';
+    titleEl.textContent = summary.title || 'Untitled';
+
+    const del = document.createElement('button');
+    del.className = 'chat-delete';
+    del.type = 'button';
+    del.title = 'Delete chat';
+    del.setAttribute('aria-label', 'Delete chat');
+    del.textContent = '×';
+    del.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm(`Delete "${summary.title || 'Untitled'}"?`)) return;
+      await deleteChat(summary.id);
+    });
+
+    li.append(titleEl, del);
+    li.addEventListener('click', () => loadChat(summary.id));
+    chatsList.appendChild(li);
+  }
+}
+
+function highlightActiveChat() {
+  for (const li of chatsList.children) {
+    li.classList.toggle('active', li.dataset.chatId === currentChatId);
+  }
+}
+
+async function loadChat(id) {
+  if (inflight) {
+    inflight.abort();
+    try {
+      await activeStream;
+    } catch {
+      /* handled in streamReply */
+    }
+  }
+  let chat;
+  try {
+    const r = await fetch(`/api/chats/${id}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    chat = await r.json();
+  } catch (err) {
+    statusLine.textContent = `Failed to load chat: ${err.message}`;
+    return;
+  }
+  chatHistory.length = 0;
+  chatMessages.innerHTML = '';
+  emptyState.hidden = true;
+  for (const m of chat.messages || []) {
+    chatHistory.push({ role: m.role, content: m.content });
+    appendMessage(m.role, m.content);
+  }
+  currentChatId = chat.id;
+  currentChatCreatedAt = chat.created_epoch_secs || Math.floor(Date.now() / 1000);
+  currentChatAiTitled = true; // existing chat already has its title; don't re-summarize
+  chatTitle.textContent = chat.title || selectedModelId || 'USBuddy';
+  stickToBottom = true;
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+  highlightActiveChat();
+}
+
+async function deleteChat(id) {
+  try {
+    await fetch(`/api/chats/${id}`, { method: 'DELETE' });
+  } catch {
+    /* swallow; refresh will reconcile */
+  }
+  savedChats = savedChats.filter((c) => c.id !== id);
+  if (currentChatId === id) {
+    resetActiveChat();
+  }
+  renderChatsList();
 }
 
 // ---------------------------------------------------------------------------

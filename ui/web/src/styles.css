@@ -27,6 +27,14 @@
 
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
+
+/* Global: the HTML `hidden` attribute must always win.
+   Author rules that set `display:` (e.g. `.btn { display: inline-flex }`,
+   `.sidebar-section { display: flex }`, `.empty-state { display: flex }`)
+   tie with the UA `[hidden] { display: none }` rule on specificity and beat
+   it on source order, silently breaking every `el.hidden = true` toggle in
+   the codebase. `!important` here is load-bearing — don't remove it. */
+[hidden] { display: none !important; }
 body {
   font-family: var(--sans);
   background:
@@ -46,9 +54,19 @@ body {
   height: 100vh;
   overflow: hidden;
 }
-.app.sidebar-hidden { grid-template-columns: 0 1fr; }
+/* Collapse to a single column so the chat actually fills the viewport.
+   With `0 1fr` plus `display:none` on the sidebar, the chat (which has no
+   explicit grid-column) falls into the first 0-width track — that's the
+   "everything goes blank" bug. One track = unambiguous chat placement. */
+.app.sidebar-hidden { grid-template-columns: 1fr; }
 .app.sidebar-hidden .sidebar { display: none; }
-.app.sidebar-hidden #sidebar-show { display: inline-flex; }
+
+/* Single toggle button — the SVG flips between panel-left-close (sidebar
+   open: arrow pointing left into the panel) and panel-left-open (sidebar
+   hidden: arrow pointing right out of the panel). One button, one job. */
+.sidebar-toggle-btn .icon-open { display: none; }
+.app.sidebar-hidden .sidebar-toggle-btn .icon-close { display: none; }
+.app.sidebar-hidden .sidebar-toggle-btn .icon-open { display: inline; }
 
 /* ------- sidebar ------- */
 .sidebar {
@@ -525,3 +543,79 @@ body {
   background: #3a4452;
   background-clip: content-box;
 }
+
+/* ------- chats sidebar list + incognito toggle ------- */
+.chats-section { min-height: 0; display: flex; flex-direction: column; flex: 1 1 auto; }
+.chats-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.chats-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  max-height: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.chats-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.3;
+}
+.chats-list li:hover { background: var(--bg-elev); color: var(--text); }
+.chats-list li.active { background: var(--accent-soft); color: var(--text); }
+.chats-list .chat-title-text { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chats-list .chat-delete {
+  background: none;
+  border: none;
+  color: var(--text-mute);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 14px;
+  opacity: 0;
+  transition: opacity .12s;
+}
+.chats-list li:hover .chat-delete { opacity: 1; }
+.chats-list .chat-delete:hover { color: var(--danger); }
+
+.incognito-pill {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(255, 210, 63, 0.15);
+  color: var(--usb-yellow);
+  border: 1px solid rgba(255, 210, 63, 0.3);
+}
+.incognito-pill.saving {
+  background: rgba(76, 175, 80, 0.15);
+  color: var(--green);
+  border-color: rgba(76, 175, 80, 0.3);
+}
+
+.incognito-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  width: auto;
+  border-radius: 999px;
+  font-size: 12px;
+  background: rgba(255, 210, 63, 0.12);
+  color: var(--usb-yellow);
+  border: 1px solid rgba(255, 210, 63, 0.3);
+}
+.incognito-toggle.saving {
+  background: rgba(76, 175, 80, 0.12);
+  color: var(--green);
+  border-color: rgba(76, 175, 80, 0.3);
+}
+.incognito-toggle .incognito-label { font-weight: 600; letter-spacing: .02em; }

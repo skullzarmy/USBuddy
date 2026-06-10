@@ -3,6 +3,7 @@ pub mod catalog;
 pub mod download;
 pub mod engine;
 pub mod error;
+pub mod gguf;
 pub mod hash;
 pub mod layout;
 pub mod license;
