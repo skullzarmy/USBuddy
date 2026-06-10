@@ -1,56 +1,52 @@
 # USBuddy
 
-> A private, safe, portable LLM that lives on your USB drive.
-
-## What it is
-
-USBuddy is a zero-install, portable local AI environment: a high-quality LLM
-that runs **fully offline** directly from a USB drive or external SSD. Plug it
-into any machine, run the AI, unplug, and walk away. The application code and
-model parameters all live on the drive.
-
-> Inspired by the *concept* behind
-> [USB-Uncensored-LLM](https://github.com/techjarves/USB-Uncensored-LLM).
-> USBuddy is an independent, clean-room build — no code is carried over.
+> A private, portable LLM that lives on a USB drive. Plug it into any machine, chat, unplug, walk away. Nothing installs, nothing phones home, nothing stays behind.
 
 ---
 
-## Quickstart
+## What it does
 
-> **Status note.** USBuddy is pre-release. No tagged release has been cut
-> yet, but the [`release.yml`](./.github/workflows/release.yml) workflow
-> is wired to produce signed, attested archives for macOS / Linux /
-> Windows containing all four binaries (`usbuddy-installer-cli`,
-> `usbuddy-installer-tui`, `usbuddy-installer-gui`, `usbuddy-runtime`)
-> plus the built web UI, launcher shims, and a starter `catalog.json`. A
-> maintainer triggers it from the Actions tab with a semver version when
-> a build is ready. Until then, you build everything from source — three
-> installer surfaces live in this repo, pick whichever you prefer:
->
-> - `usbuddy-installer-cli` — scriptable, the workhorse
-> - `usbuddy-installer-tui` — interactive ratatui menu (SSH-friendly)
-> - `usbuddy-installer-gui` — eframe/egui desktop app
->
-> All three call into the same `usbuddy-core` library. The launcher
-> scripts at the repo root (`launch-macos.command`, `launch-windows.bat`,
-> `launch-linux.sh`) are shims that ship to the **USB drive itself** —
-> they are not how you start development.
+USBuddy turns a USB stick into a self-contained AI workstation:
 
-### Prerequisites
+- **Bring your own brain.** A curated model (or any GGUF you drop in) and the
+  llama.cpp engine all live on the drive — not the host.
+- **Localhost only.** The chat UI is a static SPA served by a tiny Rust
+  wrapper at `http://127.0.0.1:8765`. No network calls, no telemetry,
+  no auto-update pings.
+- **Zero install on the host.** Double-click `USBuddy.command` /
+  `.bat` / `.sh` on the drive. The runtime spawns, opens your default
+  browser, and shuts down cleanly when you quit.
+- **Yank-safe.** All drive writes are atomic. Pull the stick mid-session
+  and the worst case is "session ends" — no half-written files, no
+  corrupted state.
 
-- Rust toolchain (stable, edition 2024) — install via <https://rustup.rs>
-- Node.js 18+ (only if you want to build/lint/test the web UI)
-- A target directory to act as your "USB drive". Any folder works for
-  development — a real exFAT-formatted USB is not required.
+Inspired by the *concept* behind
+[USB-Uncensored-LLM](https://github.com/techjarves/USB-Uncensored-LLM).
+Independent, clean-room build — no code carried over.
 
-> **`llama-server` is provisioned onto the drive, not the host.** USBuddy
-> ships an `engine install` command that downloads pinned
-> [llama.cpp](https://github.com/ggml-org/llama.cpp) release binaries for
-> macOS arm64/x64, Linux x64/arm64, and Windows x64/arm64 directly into
-> `versions/<v>/bin/<os>-<arch>/` on the drive. That's the whole point of
-> "portable" — the stick carries its own engine for every supported host.
+---
 
-### 1. Clone and build
+## Status
+
+**Pre-release.** No tagged release has shipped yet. The
+[`release.yml`](./.github/workflows/release.yml) workflow is wired and the
+maintainer fires it manually when a build is ready. Until then, build from
+source — see below.
+
+When releases ship, you'll get signed, attested archives for macOS / Linux
+/ Windows from the
+[Releases page](https://github.com/skullzarmy/USBuddy/releases),
+containing the installer plus the runtime, the SPA, launcher shims, and a
+starter catalog. No `llama-server` or model weights are bundled — the
+installer fetches those at install time.
+
+---
+
+## Getting started (from source)
+
+You need [Rust stable](https://rustup.rs) (edition 2024) and a folder
+anywhere on your machine to act as the "drive." A real USB stick isn't
+required for development — any directory works.
 
 ```sh
 git clone https://github.com/skullzarmy/USBuddy.git
@@ -58,665 +54,144 @@ cd USBuddy
 cargo build --release --workspace
 ```
 
-The binaries land in `target/release/`:
+### Three installers, your pick
 
-| Binary | Purpose |
-| --- | --- |
-| `usbuddy-installer-cli` | Scriptable installer — drive init, catalog refresh, model download, update stage/activate/rollback, license prefs, ram-assess. |
-| `usbuddy-installer-tui` | Interactive ratatui shell over the same actions; runs over SSH. |
-| `usbuddy-installer-gui` | Desktop egui app with the same actions. |
-| `usbuddy-runtime` | Localhost HTTP server + chat UI that runs from the drive. |
+All three speak to the same Rust core. Use whichever fits how you work.
 
-### 2. Initialise a drive
+| Surface                   | Best for                                                |
+| ------------------------- | ------------------------------------------------------- |
+| `usbuddy-installer-gui`   | Desktop window. The default if you just want to click.  |
+| `usbuddy-installer-tui`   | Terminal menu. SSH-friendly, dotfiles-friendly.         |
+| `usbuddy-installer-cli`   | Scriptable. Full command tree under `--help`.           |
 
-Pick any directory to act as the drive root (e.g. `/tmp/usbuddy-dev` or your
-actual USB mount point):
+```sh
+# Pick one:
+cargo run -p usbuddy-installer-gui
+cargo run -p usbuddy-installer-tui
+cargo run -p usbuddy-installer-cli -- --help
+```
+
+### Full CLI flow against a scratch drive
 
 ```sh
 DRIVE=/tmp/usbuddy-dev
 
-# Lay down the shadow-tree, current.json, .usbuddy/, models/, etc.
+# Lay down the shadow-tree layout (current.json, .usbuddy/, models/, etc.)
 cargo run -p usbuddy-installer-cli -- drive init "$DRIVE" 0.1.0
 
-# Seed it with the curated catalog (real SHA256s pulled from upstream LFS).
+# Seed with the curated catalog (real SHA256s pulled from upstream LFS)
 cp fixtures/catalog/official.catalog.json "$DRIVE/catalog.json"
 
-# Inspect to confirm.
-cargo run -p usbuddy-installer-cli -- drive inspect "$DRIVE"
-```
-
-### 3. Provision the engine and runtime onto the drive
-
-This is what makes the stick portable. Download `llama-server` for every
-platform you might plug into, and copy the USBuddy runtime onto the drive
-for the current host:
-
-```sh
-# Download llama.cpp release binaries for ALL six host platforms (~60–90 MB).
-cargo run -p usbuddy-installer-cli -- engine install "$DRIVE" --target all
-
-# Or just the platform you're sitting at right now.
+# Download llama.cpp release binaries for every supported host (~60-90 MB),
+# or `--target host` for just the platform you're on.
 cargo run -p usbuddy-installer-cli -- engine install "$DRIVE" --target host
 
-# Copy this build's usbuddy-runtime into the drive's per-host bin dir.
+# Copy this build's runtime onto the drive for the current host.
 cargo run -p usbuddy-installer-cli -- install-runtime "$DRIVE"
 
-# See what's present on the drive.
-cargo run -p usbuddy-installer-cli -- engine status "$DRIVE"
-```
-
-> The GUI exposes the same flow under the "Engine (llama.cpp)" card —
-> click *Install for ALL platforms*, then *Install runtime for this host*.
-
-> ⚠️ `install-runtime` currently copies the **host's** USBuddy build. To
-> populate the drive with runtimes for other platforms, run `install-runtime`
-> on each host (or wait for a published USBuddy release that ships
-> cross-platform runtimes).
-
-### 4. Add a model
-
-Either drop any `.gguf` file into `"$DRIVE/models/"` (it will be discovered
-as a `community-unverified` drop-in), or use the catalog flow:
-
-```sh
+# Pull a model.
 cargo run -p usbuddy-installer-cli -- model download "$DRIVE" qwen2.5-7b-instruct-q4_k_m
-```
 
-The shipped catalog contains five entries spanning the four content profiles
-(see [Content profiles](#content-profiles-replaces-uncensored-branding)):
-Qwen 2.5 7B Instruct, Mistral 7B Instruct v0.3, Llama 3.1 8B Instruct
-(gated — needs an HF token), Qwen 2.5 Coder 7B Instruct, and Dolphin 2.9.4.
-
-### 5. Run the runtime
-
-```sh
+# Run it.
 cargo run -p usbuddy-runtime -- serve --drive "$DRIVE" --open-browser
 ```
 
-This serves the chat UI on <http://127.0.0.1:8765> and opens your default
-browser. The runtime will spawn `llama-server` on port 8766 when you pick a
-model and hit launch. After 5 min of inactivity it SIGTERMs `llama-server`
-so weights leave mlocked RAM (override with `--idle-timeout-secs 0`).
+That last command serves the chat UI on
+`http://127.0.0.1:8765`, opens your default browser, and starts a
+tray icon for quit/stop. The runtime spawns `llama-server` on port 8766
+when you click **Launch**. After 5 minutes of inactivity it SIGTERMs
+`llama-server` so weights leave mlocked RAM — disable with
+`--idle-timeout-secs 0`.
 
-### Or: drive everything from the TUI / GUI
+### Drive-side launchers
+
+`drive init` writes `USBuddy.command` (macOS), `USBuddy.sh` (Linux), and
+`USBuddy.bat` (Windows) to the drive root. Those are what you double-click
+on any host once the stick is set up — they detect OS/arch, locate the
+per-platform runtime under `versions/<active>/bin/<os>-<arch>/`, and exec
+it. On macOS the `.command` script closes its Terminal window when the
+runtime exits cleanly.
+
+---
+
+## Models
+
+USBuddy ships a small curated catalog covering the four content profiles
+(see [`docs/CATALOG-SPEC.md`](./docs/CATALOG-SPEC.md)):
+
+| Profile               | Means                                                                                  |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| `aligned`             | Standard instruct + safety training. Default, no warning.                              |
+| `minimally-aligned`   | Instruct, with refusal training removed/reduced (Dolphin, Hermes, Nous).               |
+| `base`                | Pretrained foundation, no instruct tuning. Will complete anything.                     |
+| `code`                | Code-specialized (Qwen Coder, DeepSeek Coder).                                         |
+| `community-unverified`| Any `.gguf` you drop in `/models/` on the drive. Persistent badge in the picker.       |
+
+The picker enforces a **RAM-fit advisor** on every launch: green / yellow /
+red bands measured against available RAM and the model's real KV-cache
+size (parsed from the GGUF header). Red refuses to load — swap-to-disk is
+the #1 footprint leak.
+
+Saved chats are **off by default** (incognito). Toggle "Enable memory"
+in the chat header to persist conversations under `.usbuddy/chats/` on
+the drive in plaintext, with a one-time warning that the stick becomes
+the artifact at that point.
+
+---
+
+## How it's built
+
+Two programs with opposite constraints, sharing one Rust core:
+
+- **The installer** — runs once on the host, can be heavier (CLI / TUI / GUI).
+- **The runtime** — runs ephemerally from the USB on any host, must be
+  tiny, offline by default, leave no footprint.
+
+Architecture decisions (exFAT, shadow-tree `versions/`, yank-safety,
+mlock posture, no auto-updates, no system WebView dependencies) are
+written up in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md). The
+runtime serves a static SPA opened in the user's default browser; the
+installer GUI uses `egui` precisely to avoid GTK / WebKit / Qt /
+WebView dependencies.
+
+Further reading:
+
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — full design rationale.
+- [`docs/CATALOG-SPEC.md`](./docs/CATALOG-SPEC.md) — catalog schema.
+- [`docs/FOOTPRINT.md`](./docs/FOOTPRINT.md) — honest accounting of
+  residual host traces (Spotlight, Prefetch, journald, etc.).
+- [`docs/VERIFICATION.md`](./docs/VERIFICATION.md) — how to verify what
+  a release shipped.
+
+---
+
+## Development
 
 ```sh
-# Interactive terminal wizard
-cargo run -p usbuddy-installer-tui -- --drive "$DRIVE"
-
-# Desktop app
-cargo run -p usbuddy-installer-gui -- --drive "$DRIVE"
-```
-
-### Other useful CLI commands
-
-```sh
-cargo run -p usbuddy-installer-cli -- catalog refresh "$DRIVE"
-cargo run -p usbuddy-installer-cli -- catalog validate fixtures/catalog/official.catalog.json
-cargo run -p usbuddy-installer-cli -- update check "$DRIVE"
-cargo run -p usbuddy-installer-cli -- license set-prefs "$DRIVE" permissive-only
-cargo run -p usbuddy-installer-cli -- ram-assess 16 4   # 16 GiB available, 4 GiB model
-cargo run -p usbuddy-installer-cli -- --help            # full command tree
-```
-
-### Building the web UI (optional)
-
-The runtime embeds the SPA at compile time via `include_str!`, so a plain
-`cargo build` already bundles it. The `npm` scripts under `ui/web/` exist for
-linting and the bundle-validation tests:
-
-```sh
-npm --prefix ui/web install
-npm --prefix ui/web run lint
-npm --prefix ui/web run test
-npm --prefix ui/web run build
-```
-
-### Catalog maintenance (project maintainers)
-
-The shipped `fixtures/catalog/official.catalog.json` is regenerated from
-`fixtures/catalog/seed.toml` by the `xtask` crate, which fetches each
-entry's SHA256 + size from Hugging Face's LFS pointer endpoint — **no
-model bytes are downloaded**. Add a model to `seed.toml`, then:
-
-```sh
-# Public models:
-cargo run -p xtask -- catalog-fetch
-
-# Gated models (e.g. Llama family):
-HF_TOKEN=hf_xxx cargo run -p xtask -- catalog-fetch
-```
-
-### Validating a full change
-
-```sh
+# Full validation (run before pushing)
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 npm --prefix ui/web run test
+
+# Single test
+cargo test -p usbuddy-core <name>
+```
+
+The web UI under `ui/web/src/` is embedded into the runtime binary at
+compile time via `include_str!` — a plain `cargo build` already bundles
+it. The `npm` scripts exist only for linting and bundle-validation tests.
+
+Maintainers regenerate the curated catalog from `seed.toml`:
+
+```sh
+cargo run -p xtask -- catalog-fetch
+HF_TOKEN=hf_xxx cargo run -p xtask -- catalog-fetch   # for gated entries
 ```
 
 ---
-
-## Requirements (user-facing)
-
-### A. Easy, cross-platform installer
-- Cross-platform installer UI (Windows / macOS / Linux).
-- Intelligently handles **formatting and installation onto the USB drive**.
-- **Proper security** throughout.
-- **Source verification** of everything it downloads.
-- A **dynamic, "aware" wizard-style setup** that adapts to the host machine.
-
-### B. Secure, encapsulated AI
-- The AI runs **securely and self-contained**.
-- Offline by default; no surprise network exposure.
-
-### C. Truly portable — no footprint after disconnect
-- Portable to a new machine **without leaving a footprint after disconnect**.
-- Loads into **RAM** (and, if needed, temporary disk space).
-- **Cleans up on exit/eject** and leaves the host machine no different — no
-  traces beyond normal user activity (e.g., browser history).
-
----
-
-## Architecture overview
-
-USBuddy is **two programs** with opposite constraints. Conflating them leads to
-bad tech choices.
-
-|                     | The Installer                              | The Runtime (lives on USB)                 |
-| ------------------- | ------------------------------------------ | ------------------------------------------ |
-| Runs where          | Host OS, once                              | Host OS, ephemerally, anywhere             |
-| Privileges          | Likely needs admin/sudo (to format)        | Must work as unprivileged user             |
-| Footprint on host   | Doesn't matter (normal app)                | Must be ~zero                              |
-| Network             | Online to fetch + verify                   | Offline by default                         |
-| UI weight           | Can be richer                              | Must be tiny, no system deps               |
-| Distribution        | GitHub Releases, per-OS                    | Drops to USB; user double-clicks launcher  |
-
-Both programs follow a **CLI-first** internal structure: a Rust CLI binary
-does all real work (drive detection, formatting, catalog fetch, downloads,
-verification, install, launch, cleanup, updates). The GUI (`egui`) and TUI
-(`ratatui`) are thin surfaces that shell into the CLI. Single source of
-truth, fully scriptable, automatable, and testable.
-
-### Honest constraints baked into the design
-
-These are consequences of the stated requirements. Any stack must satisfy them.
-
-1. **Drive format must be exFAT.** Only viable cross-OS format for files
-   >4 GB. No Unix permissions; the runtime assumes a fully-readable drive.
-2. **AutoRun is dead.** Post-Stuxnet, no OS auto-executes from USB. The drive
-   root ships a per-OS launcher (`launch-windows.exe`, `launch-macos.command`,
-   `launch-linux.sh`).
-3. **No app stores; no paid code-signing in scope.** Distribution is via this
-   repo's Releases. Documented Gatekeeper / SmartScreen unblock steps where
-   applicable. No Apple Developer ID, no Authenticode cert. This is a
-   conscious tradeoff, documented to users.
-4. **Swap/pagefile is the #1 footprint leak vector.** Loading a model that
-   won't fit in RAM causes the OS to write weights to `pagefile.sys` / swap,
-   which persists after eject. The runtime uses `VirtualLock` / `mlock` where
-   possible and **refuses to load a model that won't fit comfortably in
-   available RAM**.
-5. **"Zero footprint" is aspirational.** Unavoidable incidental traces:
-   Windows Prefetch, macOS unified log, Linux journald, Spotlight indexing of
-   the USB, Defender SmartScreen telemetry, recent-files registries, browser
-   history. The honest framing is **"no intentional persistence; minimize
-   incidental traces; publish exactly what we know remains"** in
-   `docs/FOOTPRINT.md`.
-6. **USB I/O is the bottleneck.** A 7B-Q4 model is ~4 GB. Stream loads with
-   real progress UI; never freeze.
-7. **GPU is opportunistic, never assumed.** CPU is the always-works baseline.
-   CUDA / Metal / Vulkan / ROCm are detected and used when available.
-8. **The drive can vanish at any moment.** No writes to the USB during a
-   session; state held in RAM only. Yank-resistance is a hard requirement —
-   extends to updates: every update operation must be atomic and survivable
-   mid-write.
-
----
-
-## The stack
-
-| Layer                | Choice                                                                                                | Rationale (short)                                                                                                                                          |
-| -------------------- | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Inference engine** | **`llama.cpp` (`llama-server`)**                                                                       | Most portable engine; broadest backend matrix (CPU / CUDA / Metal / Vulkan / ROCm); GGUF format; MIT-licensed; OpenAI-compatible HTTP API on localhost.    |
-| **Runtime wrapper**  | **Rust**                                                                                               | Memory-safe (this code touches the host); tiny static binaries; deterministic cleanup via `Drop`; first-class crypto; robust process/signal handling.      |
-| **Chat UI**          | **Static SPA, served by wrapper, opened in user's default browser in private mode** (+ CLI/TUI fallback) | No frontend runtime on USB; no WebView dep; talks directly to `llama-server`'s OpenAI-compatible API.                                                       |
-| **Installer surfaces** | **CLI (foundation) + `egui` GUI + `ratatui` TUI**, all calling the same Rust core                    | No system UI deps (no GTK / WebKit / Qt). CLI is the workhorse; GUI/TUI are thin presentation layers. Scriptable, dotfiles-friendly, SSH-friendly.          |
-
-### Ruled out, with reasons
-
-- **Ollama** — daemon/service model, installs into system paths, registers
-  background services. Architecturally opposite to "no footprint."
-- **llamafile** — bundles weights + engine into one APE binary; bad for
-  updates; trips some EDR/AV products.
-- **MLC-LLM / vLLM / TGI / SGLang** — server-class or research stacks;
-  heavier deps; weaker portability story.
-- **Electron / Tauri / Wails** — bundles Chromium (Electron) or depends on
-  system WebView (Tauri/Wails on Linux = WebKitGTK, the exact problem this
-  project must avoid).
-- **Native cross-platform GUI for the chat surface** (Qt / GTK) — heavy,
-  per-OS pain, no real benefit over a browser for a chat interface.
-
----
-
-## Model layer
-
-llama.cpp is engine-agnostic by design — GGUF is the portable container.
-USBuddy adds a **catalog**, a **picker**, a **verifier**, and a **RAM-fit
-advisor** on top.
-
-### In-repo catalog (`catalog.json`)
-
-- **Catalog lives in this repo**, maintained by the project. The repo is the
-  trust root.
-- HTTPS + GitHub authenticates transport and authorship; git history is the
-  audit log.
-- **Forkable.** Anyone can fork the repo (or just the catalog) and point their
-  installer at a custom URL.
-- **No Sigstore / cosign infrastructure.** Repo authentication is sufficient
-  for this distribution model. SHA256 per model entry is mandatory — that's
-  integrity, not signing.
-
-### Catalog format
-
-- **Format:** JSON. Machine-generated, schema-validatable, diffable in PRs.
-- **Schema versioning:** `schema: "usbuddy.catalog/v1"` at the root. Installer
-  refuses unknown schema versions with a clear "upgrade USBuddy" error.
-- **Entry granularity:** **flat** — one entry per downloadable artifact.
-  Family relationships expressed via a `family_id` field
-  (`llama-3.1-8b-instruct-q4_k_m` and `llama-3.1-8b-instruct-q5_k_m` share
-  `family_id: "llama-3.1-8b-instruct"`). Picker groups by family in UI;
-  storage is flat.
-- **Prompt templates:** reference by name (`prompt_template: "chatml"`,
-  `"llama3"`, `"mistral"`) — llama-server already implements these. An
-  embedded override field exists for truly custom templates.
-- **Capabilities:** array of strings — `["chat", "function_calling",
-  "json_mode", "vision", "code", "long_context"]`. Picker can filter.
-- **Aliases:** `aliases: []` per entry, so renames don't break existing
-  installs' `catalog.local.json` references.
-- **Update channels:** single `stable` channel for v1. Multi-channel deferred
-  until there's a real use case.
-- **Advisories:** root-level `advisories: []` array — see [Updates](#updates).
-- Full schema lives in [`docs/CATALOG-SPEC.md`](./docs/CATALOG-SPEC.md).
-
-### Three sources of models, one picker
-
-1. **Catalog models** — curated, in the official `catalog.json`. License
-   acceptance handled by USBuddy.
-2. **Custom catalogs** — power users / orgs can add additional catalog URLs
-   (their own mirror, a community catalog). Each is a separate trust decision
-   by the user.
-3. **Drop-in** — any `.gguf` file copied to `/models/` shows up in the picker,
-   parsed from GGUF embedded metadata. Flagged `community-unverified` in UI.
-   License handling is the user's responsibility (out of scope).
-
-### Content profiles (replaces "uncensored" branding)
-
-| Label                  | Meaning                                                                                | UI treatment                                          |
-| ---------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `aligned`              | Standard instruct + safety training (Llama-Instruct, Qwen-Instruct, Mistral-Instruct). | Default. No warning.                                  |
-| `minimally-aligned`    | Instruct-tuned, refusal training removed/reduced (Dolphin, Hermes, Nous).              | One-time confirmation per model.                      |
-| `base`                 | Pretrained foundation, no instruct tuning. Will complete anything.                     | One-time confirmation + custom system prompt required. |
-| `code`                 | Code-specialized (Qwen-Coder, DeepSeek-Coder).                                         | No warning.                                           |
-| `vision`               | Multimodal.                                                                            | Future — adds complexity.                             |
-| `community-unverified` | Drop-in GGUF, no catalog entry.                                                        | Persistent badge in UI.                               |
-
-The capability the source repo flagged as "uncensored" is fully preserved via
-the `minimally-aligned` and `base` profiles. The framing is factual,
-jurisdictionally portable, and avoids marketing / contributor / CA-review
-baggage. The word "uncensored" may appear in upstream model descriptions; it
-is not used in the USBuddy product surface.
-
-### Integrity & gated models
-
-- Every catalog entry carries `sha256`. Verified at download **and** at every
-  launch (USB corruption is real).
-- **Gated models** (Llama family, etc., requiring upstream approval): catalog
-  entry sets `auth: { type: "hf_token", gate_url: "..." }`.
-  - **Primary path:** user provides a HuggingFace token, stored on the USB
-    with clear docs on storage posture. USBuddy handles managed download and
-    license acceptance.
-  - **Fallback:** if no token, USBuddy walks the user through manual download
-    on the gate URL and accepts the resulting `.gguf` as a drop-in.
-
-### RAM-fit advisor
-
-Runs every launch, on every host. Doubles as a **footprint security control**:
-a model that doesn't fit in RAM will swap to disk, which is the #1 leak
-vector.
-
-Bands, measured against **detected available RAM** (not total):
-
-| Band   | Rule                                                                              | Behavior                                                     |
-| ------ | --------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| Green  | model + KV cache + overhead fits with ≥ 20% margin; ≥ 3 GB host OS headroom left  | Loads silently.                                              |
-| Yellow | fits but margin < 20%, OR host headroom < 3 GB but ≥ 1 GB                          | One-time "may slow your computer" notice; loads.             |
-| Red    | doesn't fit, OR would leave host with < 1 GB headroom                              | **Refuses to load.** Suggests smaller quant or shorter context. |
-
-Refinements baked in:
-
-- **Context-length slider** in the picker with live RAM impact (KV cache grows
-  with context). User can reduce context to shift Yellow → Green.
-- **Idle unload, default-on, 5 min threshold.** After 5 min of no activity,
-  llama-server unloads the model from mlocked RAM. Reloads on next message
-  (~2–5 s). Toggleable in config. Default-on because idle mlocked weights
-  contradict the entire footprint pitch.
-
-Initial threshold numbers are best-guess from llama.cpp's published figures
-and will be empirically tuned on real hardware before v0.1.0 GA.
-
-### Mid-session model swap
-
-- **Architecture:** kill-and-restart. SIGTERM the running `llama-server`,
-  spawn a new one with the new model. Conversation state lives **in the
-  wrapper as messages** (not as tokenized state), so it's model-agnostic.
-- **On swap:** wrapper sends full message history as a normal OpenAI-compat
-  chat completion to the new model. llama-server's prompt caching makes
-  subsequent messages fast.
-- **UI:** "Switching to {model}..." with real progress; model load is the
-  bottleneck.
-- **Refuses swap if new model fails RAM-fit.** Suggests alternatives.
-- **Forced "start fresh conversation" on `instruct` ↔ `base` profile-boundary
-  swaps.** Base models don't speak chat format and derail. Same-profile
-  swaps carry history normally.
-- **No two-process hot swap.** Doubles RAM use and directly fights the
-  RAM-fit advisor.
-
----
-
-## License handling
-
-Three-tier model:
-
-1. **Managed (catalog downloads)** — USBuddy adheres to the letter and spirit
-   of upstream licenses. Per-model: a "View license" link expands the full
-   license text, and a single "I accept the license" checkbox sits next to
-   the model in the picker. Install button stays disabled until every
-   selected model's checkbox is ticked. Acceptance recorded as
-   `(model_id, license_sha256, timestamp, host_at_accept)`. Re-prompts if
-   upstream license changes. A "Credits" screen in the chat UI shows required
-   attribution.
-2. **Drop-in** — user's responsibility. Out of scope.
-3. **Opt-out** — auditable, plain-text config (`/.usbuddy/license-prefs.toml`)
-   with `scope = "all" | "permissive_only" | "none"`. `permissive_only`
-   auto-accepts Apache / MIT / BSD-style and still prompts on restrictive
-   terms (Llama community license, etc.).
-
-The opt-out file is visible and greppable so anyone borrowing the drive can
-see what's been agreed to on their behalf.
-
----
-
-## Security & footprint posture
-
-### Code signing
-- **Not in scope.** No App Store distribution; no paid Apple Developer ID; no
-  Authenticode cert.
-- **macOS:** Unsigned binaries trip Gatekeeper. Unblock steps are documented
-  consistently in `README`, `INSTALL.md`, and the installer's macOS screen
-  itself (three places, same wording). The installer strips
-  `com.apple.quarantine` from binaries written to the USB so Gatekeeper
-  doesn't trip on every host.
-- **Windows:** SmartScreen "More info → Run anyway" documented similarly.
-- **Linux:** Nothing needed.
-
-### Footprint
-- `docs/FOOTPRINT.md` documents per-OS residual traces honestly.
-- [`.github/workflows/footprint.yml`](./.github/workflows/footprint.yml)
-  runs a snapshot-diff regression on every PR that touches the runtime, and
-  weekly on a cron. **Linux-only today** — it boots the runtime against a
-  scratch drive directory, diffs `$HOME` + `/tmp` before and after, and
-  uploads the diff as an artifact. Windows Sandbox / macOS runners and
-  `/proc`-level mlock assertions are tracked follow-ups.
-
-### Trust root
-- **This GitHub repo. That's it.** No external PKI.
-
----
-
-## USB drive layout
-
-USBuddy uses a **shadow-tree** layout: each installed runtime version lives in
-its own directory under `versions/`, and a single `current.json` pointer
-selects the active one. This makes every update atomic and every release
-trivially rollback-able. See [Updates](#updates) for the lifecycle.
-
-```
-/USBuddy/
-├── current.json                ← {"active": "0.2.0", "previous": "0.1.0", "schema": 1}
-├── launch-windows.exe          ← thin launcher; reads current.json, execs active wrapper
-├── launch-macos.command
-├── launch-linux.sh
-├── versions/
-│   ├── 0.1.0/
-│   │   ├── bin/
-│   │   │   ├── windows-x64/
-│   │   │   ├── macos-arm64/llama-server
-│   │   │   ├── macos-x64/llama-server
-│   │   │   ├── macos/usbuddy-wrapper   ← universal2; picks arch at runtime
-│   │   │   └── linux-x64/
-│   │   ├── ui/                 ← static SPA bundle pinned to this version
-│   │   └── version.json        ← {"version":"0.1.0","sha256":"…","released":"…"}
-│   └── 0.2.0/                  ← parallel tree for next version
-├── models/                     ← shared across versions; sha256-keyed filenames
-│   └── catalog.local.json      ← provenance for installed models
-├── catalog.json                ← shared snapshot; refreshable independently of runtime
-├── .usbuddy/                   ← shared user data; survives runtime upgrades
-│   ├── trust/                  ← repo trust info
-│   ├── license-prefs.toml      ← visible audit trail
-│   ├── hf-token                ← if user configured HF auth (clear docs on posture)
-│   └── advisories-seen.json    ← dismissed advisories
-└── README.txt                  ← plain-text user-facing note
-```
-
-What's **shared** vs. **versioned**:
-- **Versioned** (lives under `versions/{ver}/`): wrapper binary, llama-server
-  binaries, static SPA bundle, anything that's tested as a unit.
-- **Shared** (lives at drive root): models (huge, version-independent),
-  catalog snapshot, user data, launchers (rarely change; bootstrap shims
-  that read `current.json`).
-
----
-
-## Updates
-
-Updates are a first-class concern. Seven distinct vectors, each handled
-intentionally:
-
-| #  | What                              | Frequency   | Mechanism                                                     |
-| -- | --------------------------------- | ----------- | ------------------------------------------------------------- |
-| 1  | Installer binary                  | Rare        | Re-download from GitHub Releases.                             |
-| 2  | USBuddy runtime (wrapper + SPA)   | Occasional  | Shadow-tree install of new version under `versions/{new}/`.   |
-| 3  | `llama-server` binaries           | Bundled     | Pinned to runtime version. **Not independently updatable.**   |
-| 4  | Catalog snapshot                  | Frequent    | Refresh-on-demand; independent of runtime version.            |
-| 5  | Model weights                     | User-driven | Never auto-touched. User adds/removes via picker.             |
-| 6  | License re-acceptance             | Rare        | Detected at runtime when stored `license_sha256` diverges; re-prompts. |
-| 7  | Security advisories               | Hopefully never | Catalog `advisories[]` array; surfaced at launch.         |
-
-### Cross-cutting principles
-
-1. **User-initiated. Always.** No background checks, no auto-updates. Updates
-   require an explicit action: running the installer, clicking "Check for
-   updates" in the runtime (default-off), or invoking the CLI.
-2. **Yank-safe.** Every update is atomic. Mid-update yank leaves the previous
-   version active and launchable.
-3. **Frozen-version respect.** A drive that never reconnects keeps working
-   forever. No "out of date" nagging in the runtime.
-4. **Rollback is one click.** N-1 stays on the drive by default.
-5. **Never auto-modify user data.** Models, license prefs, and HF token
-   survive every runtime update untouched.
-6. **No offline phone-home.** Update checks only happen when the user asks.
-
-### Update process (runtime)
-
-1. Fetch latest release manifest from GitHub Releases API.
-2. If newer than `current.active`, show changelog, ask user to proceed.
-3. Download new version to `/USBuddy/versions/{new}.tmp/`; verify SHA256
-   against release manifest.
-4. Atomic rename `{new}.tmp/` → `{new}/`.
-5. Atomic write of new `current.json` with `active: {new}, previous: {old}`.
-6. (Optional) garbage-collect `versions/{N-2}/`. Default: keep last 2.
-
-Interruption before step 4: partial tmp dir; cleaned up on next install.
-Interruption between 4 and 5: new tree present but inactive; next install
-detects and offers to activate or discard. Interruption after 5: new version
-is live.
-
-### Rollback
-
-Swap `active` and `previous` in `current.json`. Single atomic file write.
-Available from installer's "Manage existing install" mode, runtime settings,
-and CLI (`usbuddy update --rollback`).
-
-### Three update entry points, one core
-
-1. **Installer's "Manage existing install" mode.** Detects existing drive →
-   offers Upgrade / Reinstall / Add/remove models / Rollback. The primary
-   update path.
-2. **Runtime "Check for updates" button** in chat UI settings. Default
-   **off**; user enables explicitly. One HTTPS call, shows changelog, stages
-   on the drive, applies on next launch.
-3. **CLI:** `usbuddy update --drive /path/to/USBuddy [--to VERSION|latest]
-   [--rollback] [--gc]`. Scriptable. Same Rust core as the other two.
-
-### Catalog updates
-
-- Independent of runtime updates. USBuddy 0.1.0 can run with the latest
-  catalog; USBuddy 0.5.0 can run with a 6-month-old catalog.
-- Catalog `schema` version pins the compatible runtime range. Schema
-  mismatch = clear error suggesting runtime upgrade. No silent breakage.
-- Refresh from runtime settings or CLI (`usbuddy catalog refresh`).
-
-### Advisories
-
-- New root-level `advisories: []` array in `catalog.json`.
-- Each entry: `id`, `severity`, `affects` (model IDs, runtime versions, or
-  llama-server CVE refs), `summary`, `recommended_action`.
-- Runtime surfaces relevant advisories at launch (filtered against installed
-  models / current runtime version), with "dismiss" persisted to
-  `.usbuddy/advisories-seen.json`.
-- **Informational only.** USBuddy never deletes models or downgrades runtimes
-  based on advisories — user always acts.
-
-### Why llama-server is bundled, not independently updatable
-
-- llama.cpp's GGUF format and runtime API evolve. A newer `llama-server` may
-  not be wire-compatible with an older wrapper.
-- Test matrix would explode. We ship and test "USBuddy {ver} with the
-  llama-server we shipped" — one combination per release.
-- Stable-distro posture. If a critical llama.cpp CVE drops, we cut a USBuddy
-  patch release. Same trust path, same mechanism.
-
----
-
-## Build, release & supply chain
-
-Two GitHub Actions workflows. Hard split — different triggers, different cost
-profiles, different risk.
-
-### `ci.yml` — always-on (PR + push to `main`)
-
-| Job           | Purpose                                                                                |
-| ------------- | -------------------------------------------------------------------------------------- |
-| `lint`        | `cargo fmt --check`, `cargo clippy -- -D warnings`. Single Linux runner.                |
-| `test`        | `cargo test` on the full matrix. Path / process / FS semantics differ per OS.           |
-| `build-check` | `cargo build --release` on the matrix. Catches "works on my Mac" before release day.    |
-| `audit`       | `cargo audit` for CVEs. Weekly cron + on-PR. Annotation only; doesn't fail the build.   |
-
-Cached with `Swatinem/rust-cache@v2`.
-
-### `release.yml` — manual fire (`workflow_dispatch`)
-
-**Inputs:**
-- `version` (required, semver string — e.g. `0.1.0` or `0.2.0-rc.1`)
-- `draft` (default: `true`)
-- `prerelease` is **auto-derived** from presence of `-` in `version`
-
-**Pipeline:** `validate → test → build (matrix) → package → release`
-
-**Build matrix:**
-
-| Output binary                                | Runner          | How                                                                                                  |
-| -------------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------- |
-| `usbuddy-installer-windows-x64.exe`          | `windows-latest`| `x86_64-pc-windows-msvc`.                                                                            |
-| `usbuddy-installer-macos-universal.tar.gz`   | `macos-latest`  | Build `aarch64-apple-darwin` + `x86_64-apple-darwin`, then `lipo -create` into one universal2 binary. |
-| `usbuddy-installer-linux-x64.tar.gz`         | `ubuntu-latest` | `x86_64-unknown-linux-gnu`.                                                                          |
-
-- **macOS:** single universal2 download supports both Apple Silicon and Intel
-  Macs. No "which chip do I have?" UX friction; halves macOS CI minutes vs.
-  separate runners.
-- **Linux ARM:** deferred for v0.1.0. Power users build from source.
-
-**Per-build job steps:**
-1. Checkout at commit.
-2. Inject `version` into build-time env (`env!("USBUDDY_VERSION")`).
-3. Build installer + wrapper + launchers; bundle static SPA + catalog snapshot.
-4. Compute SHA256 of installer.
-5. Upload artifact.
-
-> **Not in the release bundle:** llama.cpp binaries and model weights. The
-> installer downloads these at install time, per the `NOTICE`'s
-> upstream-licensure boundary. Keeps releases small (~10–20 MB).
-
-**Package step:**
-- Aggregate matrix artifacts.
-- Generate `SHA256SUMS.txt` covering every release asset.
-- Generate **SBOM (CycloneDX)** via `cargo-cyclonedx` — fulfills the `NOTICE`'s
-  "signed artifact manifest" promise.
-- Generate **SLSA build provenance** via
-  `actions/attest-build-provenance@v1` — GitHub-native, free, lets users run
-  `gh attestation verify` against the binary.
-
-**Release step:**
-- Workflow **auto-creates the tag** `v{version}` at the build commit (single
-  source of truth).
-- Creates a **draft** release with all assets + `SHA256SUMS.txt` + SBOM +
-  provenance attestation.
-- Release notes auto-generated via `generate_release_notes: true`.
-- Maintainer reviews the draft, edits notes, publishes manually.
-
-### Deferred (separate workflows, post-v0.1.0)
-- `footprint.yml` — Windows Sandbox / macOS snapshot-diff runners
-  (Linux runner already in place).
-- `catalog-validate.yml` extensions — URL liveness probing and
-  upstream SHA256 verification against HF LFS pointers as a PR gate
-  (basic schema validation already runs today).
-- E2E install test against a real exFAT-formatted USB volume
-  (the in-tempdir E2E test that exercises the full installer-cli
-  lifecycle is already in place).
-
----
-
-## Status
-
-- Repo scaffolded. ✅
-- Architecture & plan: **locked in** (this document). ✅
-- Docs: `docs/ARCHITECTURE.md`, `docs/CATALOG-SPEC.md`, `docs/FOOTPRINT.md`, `docs/VERIFICATION.md`. ✅
-- Core crates: **implemented.** `usbuddy-core`, `usbuddy-installer-cli`, `usbuddy-runtime`. ✅
-- License: **Apache-2.0** (see `LICENSE` and `NOTICE`). ✅
-
-### What's built
-
-| Component | Status |
-| --- | --- |
-| `usbuddy-core` — catalog, layout, RAM-fit, hash, license, atomic writes | ✅ |
-| `usbuddy-installer-cli` — drive init/inspect/rollback, catalog validate/refresh, model download/remove, update check/stage/activate | ✅ |
-| `usbuddy-installer-tui` — ratatui interactive shell over the core | ✅ |
-| `usbuddy-installer-gui` — eframe/egui desktop shell over the core | ✅ |
-| `usbuddy-runtime` — localhost HTTP server, llama-server spawn/kill, chat reverse-proxy, static SPA, idle-unload (5-min default) | ✅ |
-| Chat UI — model picker, RAM-fit indicators, context-length slider, chat interface | ✅ |
-| `xtask catalog-fetch` — populates `official.catalog.json` from HF LFS pointers (no model bytes downloaded) | ✅ |
-| `fixtures/catalog/official.catalog.json` — 5 curated models across aligned / minimally-aligned / code / gated profiles, real upstream SHA256s | ✅ |
-| CI — `ci.yml` (lint/test/build/audit matrix), `release.yml` (workflow_dispatch, SBOM, SLSA), `catalog-validate.yml`, `footprint.yml` snapshot-diff | ✅ |
-| E2E install test — full installer-cli lifecycle (init → catalog → drop-in → license → update stage/activate/rollback) | ✅ |
-| Launcher scripts — `launch-linux.sh`, `launch-macos.command`, `launch-windows.bat` | ✅ |
-| JSON schemas — `catalog.schema.json`, `release-manifest.schema.json` | ✅ |
-
-### Open (implementation work, not architecture)
-- Empirical tuning of RAM-fit threshold constants on real hardware
-- Populate the catalog with a wider curated model set (the 5 shipped today are a starting point)
-- Windows / macOS snapshot-diff runners for `footprint.yml`
 
 ## License
 
-Apache-2.0. See [`LICENSE`](./LICENSE) and [`NOTICE`](./NOTICE).
+[Apache-2.0](./LICENSE). See also [`NOTICE`](./NOTICE) for upstream
+attribution requirements (llama.cpp, model weights).
