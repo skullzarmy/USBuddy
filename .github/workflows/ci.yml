@@ -1,12 +1,10 @@
 name: ci
 
 on:
-  pull_request:
-  push:
-    branches:
-      - main
-  schedule:
-    - cron: '0 5 * * 1'
+  # Automatic triggers (pull_request, push to main, weekly cron) are
+  # disabled to conserve Actions minutes. Run on demand from the
+  # Actions tab or via `gh workflow run ci.yml`.
+  workflow_dispatch:
 
 jobs:
   lint:

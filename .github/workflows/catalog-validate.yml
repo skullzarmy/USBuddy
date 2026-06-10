@@ -1,16 +1,10 @@
 name: catalog-validate
 
 on:
-  pull_request:
-    paths:
-      - 'fixtures/catalog/**'
-      - 'schemas/catalog.schema.json'
-  push:
-    branches:
-      - main
-    paths:
-      - 'fixtures/catalog/**'
-      - 'schemas/catalog.schema.json'
+  # Automatic triggers (pull_request, push to main) are disabled to
+  # conserve Actions minutes. Run on demand from the Actions tab or
+  # via `gh workflow run catalog-validate.yml`.
+  workflow_dispatch:
 
 jobs:
   validate:

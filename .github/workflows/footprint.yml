@@ -23,15 +23,10 @@ name: footprint
 #     diff; they need /proc tracing. Out of scope here.
 
 on:
+  # Automatic triggers (weekly cron, pull_request on runtime paths) are
+  # disabled to conserve Actions minutes. Run on demand from the
+  # Actions tab or via `gh workflow run footprint.yml`.
   workflow_dispatch:
-  schedule:
-    # Weekly, off-hours. Footprint regressions are rare; nightly is overkill.
-    - cron: '0 7 * * 0'
-  pull_request:
-    paths:
-      - 'crates/usbuddy-runtime/**'
-      - 'crates/usbuddy-core/src/layout.rs'
-      - '.github/workflows/footprint.yml'
 
 jobs:
   linux-snapshot:
