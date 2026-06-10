@@ -1,151 +1,149 @@
-# Footprint
+# Host footprint
 
-This document is the honest accounting of what USBuddy leaves on a host
-machine after you unplug. Read it before you trust the privacy claims.
+USBuddy's design goal is to leave no intentional persistence on a host
+machine. This document specifies the boundaries of that goal: what the
+runtime and installer are guaranteed not to do, and what the host
+operating system records about the session regardless.
 
-## What "no footprint" actually means
+## Scope of the guarantee
 
-USBuddy's guarantee is **no intentional persistence**. The runtime
-doesn't install services, doesn't write to system directories, doesn't
-register a login item, doesn't drop config in your home directory,
-doesn't keep network listeners open beyond `localhost:8765` during the
-session, and doesn't write to the USB drive while a chat is in
-progress. When you click Quit, every process USBuddy started exits and
-every resource it held is released.
+The guarantee USBuddy makes is no intentional persistence on the host.
+That is bounded by what the implementation controls. It does not
+extend to artifacts produced by the operating system itself.
 
-That guarantee is what we can enforce in our own code. What we **can't**
-enforce is the host operating system itself. Modern OSes log process
-launches, index removable media, cache executable hashes for reputation
-checks, and write swap when memory pressure forces them to. Some of
-those traces persist after you eject the drive. We can't prevent them
-from inside a USB application; the most we can do is minimize what we
-produce and tell you exactly what gets left behind.
+In concrete terms:
 
-The honest framing is:
+- The runtime does not install services, register login items, or
+  modify system configuration on any platform.
+- The runtime writes only to the USB drive, and only while idle —
+  never during an active chat session.
+- The runtime binds only to `127.0.0.1:8765` (the HTTP server) and
+  spawns `llama-server` on `127.0.0.1:8766`. Both processes terminate
+  on quit.
+- No network requests are initiated unless the user explicitly
+  triggers one. The runtime does not perform telemetry, update
+  polling, or background catalog refreshes.
+- The installer writes to the USB drive and the cache directories
+  expected of a normal desktop application on its host. It does not
+  modify system paths.
 
-> USBuddy promises no intentional persistence. It does not promise a
-> perfectly trace-free host. Here is what's left.
+The guarantee does not extend to:
 
-## What USBuddy actively avoids
+- Operating-system logs of process execution, library load, or
+  socket activity.
+- Filesystem and execution caches maintained by the host
+  (Prefetch, AmCache, ShimCache, Spotlight, journald, audit).
+- Network requests initiated by the host on USBuddy's behalf
+  (Gatekeeper assessment, SmartScreen reputation lookups, Defender
+  cloud submissions, browser history sync, OCSP / CRL checks).
+- Memory pressure outcomes (swap or pagefile writes) on hosts that
+  refuse `mlock` or that the RAM-fit advisor underestimates.
 
-- No system service or daemon registration on any platform.
-- No writes to system install paths.
-- No writes outside the USB drive at any time.
-- No network listeners except `127.0.0.1:8765` (the runtime HTTP
-  server) and `127.0.0.1:8766` (`llama-server`, spawned by the
-  runtime). Both die when the runtime quits.
-- No telemetry. No phone-home. No update checks unless the user
-  explicitly clicks one.
-- No writes to the USB drive during an active chat session. Chat
-  buffers live in RAM until the user enables persistence in the UI.
+## Per-platform host artifacts
 
-## What the host operating system records
-
-These traces are produced by the host, not by USBuddy, and we cannot
-suppress them from inside the application.
+The following artifacts are produced by the host operating system
+during a USBuddy session. They are not under USBuddy's control.
 
 ### macOS
 
-- **Gatekeeper quarantine**: until the user runs an unsigned binary
-  once (or strips `com.apple.quarantine`), each launch triggers a
-  Gatekeeper dialog. The dialog itself doesn't persist; the user's
-  approval does, scoped to that binary on that user account.
-- **Unified log**: every process launch, network bind, and signal is
-  written to the unified log. `log show --predicate 'process ==
-  "usbuddy-runtime"'` reproduces this.
-- **Spotlight**: if Spotlight indexing of removable media is enabled
-  (default on most setups), `mdimporter` will index the drive's
-  contents while it's connected. The Spotlight index is on the drive
-  itself, but Spotlight metadata about *which drives have been
-  connected* lives on the host.
-- **Recent items / browser history**: opening the chat URL in your
-  default browser will leave it in browser history unless you've
-  configured the browser to ignore localhost or used private
-  browsing. USBuddy currently asks the OS to open the URL via `open
-  <url>`; it does not request private mode.
+- **Gatekeeper assessment**. First execution of each unsigned binary
+  triggers a Gatekeeper dialog and a network assessment. The user's
+  approval is persisted per-binary in the launch services database.
+- **Unified log**. `log show --predicate 'process == "usbuddy-runtime"'`
+  returns process start, network bind, signal delivery, and
+  termination events.
+- **Spotlight metadata**. When indexing of removable media is enabled
+  (the default), `mdimporter` indexes the drive's contents while
+  mounted and stores metadata about which drives have been seen on
+  the host.
+- **Browser history**. The default browser is invoked via `open
+  <url>` and records the URL in its history database unless the user
+  has configured exclusions or private browsing.
+- **launchservicesd cache**. Records the path and signature of every
+  executed binary.
 
 ### Windows
 
-- **SmartScreen reputation check**: the first time you launch an
-  unsigned binary, SmartScreen consults Microsoft's reputation service
-  over the network. The check itself is a network call from the host;
-  the "Run anyway" decision is cached locally.
-- **Defender real-time scan**: scans the runtime binary and
-  `llama-server` on first execution. Hashes are reported to Defender
-  cloud per the user's privacy settings.
-- **Prefetch**: `C:\Windows\Prefetch\` records executable launches by
-  filename and timestamp.
-- **AmCache / ShimCache**: catalog of every executable that's been
-  launched.
-- **Pagefile**: if a model exceeds the host's available RAM and the
-  host ignores or refuses memory locking, weights can spill to
-  `pagefile.sys`. USBuddy's RAM-fit advisor refuses to load models
-  that don't comfortably fit precisely to prevent this. Pagefile
-  writes from refused launches are zero. Pagefile writes from a
-  yellow-band launch under unexpected memory pressure are possible.
+- **SmartScreen reputation lookup**. First execution of an unsigned
+  binary issues a network request to Microsoft's reputation service.
+  The user's "Run anyway" approval is cached locally.
+- **Microsoft Defender real-time scan**. Scans the runtime binary
+  and `llama-server` on first execution. Per the user's privacy
+  settings, file hashes and metadata may be submitted to Defender
+  cloud.
+- **Prefetch**. `C:\Windows\Prefetch\` records executable name,
+  path, and launch timestamps.
+- **AmCache and ShimCache**. Persist the path, size, and
+  compatibility shim status of every executed binary.
+- **Event Log**. `Application` and `System` channels record process
+  creation if auditing is enabled.
+- **Pagefile**. A model loaded under unexpected memory pressure may
+  produce writes to `pagefile.sys`. The RAM-fit advisor blocks
+  red-band launches to prevent this; yellow-band launches under
+  unexpected pressure remain possible.
 
 ### Linux
 
-- **Journald / syslog**: process launches and network binds are
-  recorded per the host's logging configuration.
-- **Shell history**: if the user launched the runtime from a shell
-  rather than the `.sh` launcher, the command line lives in
-  `~/.bash_history` (or equivalent).
-- **Recent files / desktop launcher cache**: most desktop
-  environments record recently-opened items including files on
-  removable media.
-- **Swap**: same dynamic as Windows pagefile. The RAM-fit advisor
-  blocks red-band launches; yellow-band launches under unexpected
-  pressure can swap.
-- **`/var/log/audit/`**: if `auditd` is configured to log execve, the
-  runtime's launch is recorded there.
+- **journald / syslog**. Records process start and termination
+  per the host's logging configuration.
+- **auditd**. When `execve` auditing is enabled, the runtime's
+  execution is recorded under `/var/log/audit/`.
+- **Shell history**. Commands launched manually are recorded in
+  the user's shell history file.
+- **Desktop launcher and recent-files caches**. Most desktop
+  environments record opening removable-media items in
+  `~/.local/share/recently-used.xbel` or equivalent.
+- **Swap**. As with Windows pagefile, a model under unexpected
+  memory pressure may write to swap on a host that ignores
+  `mlock`. The RAM-fit advisor blocks red-band launches.
 
-## What USBuddy does to minimize this
+## Mitigations USBuddy implements
 
-- **RAM-fit advisor blocks red-band launches.** A model that would
-  spill to swap is refused, not warned. The advisor uses the model's
-  real KV-cache shape parsed from the GGUF header — no fudge
-  constants.
-- **Idle-unload defaults to 5 minutes.** After idle, the runtime
-  `SIGTERM`s `llama-server` so model weights leave mlocked RAM. The
-  next message reloads them. This shortens the window in which
-  weights are pageable.
-- **Chat memory defaults to off.** Conversations live in RAM only
-  unless the user explicitly enables persistence. When persistence is
-  enabled, the warning dialog states that the stick becomes the
-  artifact.
-- **All drive writes are atomic.** A yank mid-update can't corrupt
-  the drive — at worst, the previous version stays active.
-- **No background catalog refresh.** Updates and catalog refreshes
-  require an explicit user action.
+The following are implemented in `usbuddy-core` and the runtime to
+limit footprint within the bounds the implementation controls.
 
-## How to verify this yourself
+- **RAM-fit advisor**. Models that do not fit comfortably in
+  available memory are refused. The advisor parses the GGUF header
+  to compute the model's actual KV-cache size per token. Red-band
+  launches do not proceed.
+- **Idle unload**. After 5 minutes of chat inactivity, the runtime
+  sends `SIGTERM` to `llama-server`, releasing mlocked weights.
+  Reload occurs transparently on the next message. Threshold is
+  configurable via `--idle-timeout-secs`; `0` disables.
+- **Chat memory defaults to off**. Conversations are held in RAM
+  only unless the user explicitly enables persistence. When
+  enabled, the warning dialog states that the drive becomes the
+  artifact at that point.
+- **Atomic drive writes**. All writes to drive state pass through
+  `usbuddy_core::atomic`. A mid-write yank leaves the previous
+  version active.
+- **No background network operations**. Catalog refreshes and
+  update checks require explicit user action.
 
-The Linux footprint job in
+## Verification
+
+The Linux footprint job at
 [`.github/workflows/footprint.yml`](../.github/workflows/footprint.yml)
-runs on every PR that touches the runtime. It boots the runtime against
-a scratch drive directory inside a Linux container, snapshots `$HOME`
-and `/tmp` before and after, and uploads the diff as a CI artifact.
-Anything the runtime writes outside the drive shows up there.
+runs on every pull request that touches the runtime. The job boots
+the runtime against a scratch drive directory inside a Linux container,
+snapshots `$HOME` and `/tmp` before and after the session, and uploads
+the diff as a CI artifact. Any writes the runtime makes outside the
+drive appear in the diff.
 
-The Windows Sandbox and macOS snapshot-diff equivalents are tracked
-follow-ups, deferred for v0.1.0. The reason isn't difficulty — it's that
-neither has a clean container model the way Linux does.
+Comparable Windows Sandbox and macOS snapshot jobs are deferred until
+suitable container primitives are available on those platforms.
 
-You can also run the snapshot diff yourself: before plugging the
-drive, take a baseline of whatever paths you care about (browser
-history, prefetch, unified log, journald). Use the drive. Take a second
-snapshot. Diff. Anything you see is on this page, or it's a bug —
-file an issue.
+The same verification can be reproduced manually: take a baseline of
+the directories of interest before connecting the drive, complete a
+session, take a second snapshot, and diff.
 
 ## Out of scope
 
-- **Forensic guarantees.** USBuddy is not a forensic-grade tool. If
-  your threat model includes a forensic examiner with disk access to
-  the host post-eject, this is not the right product.
-- **Browser private-mode enforcement.** The runtime asks the OS to
-  open a URL. It cannot force a browser to use private mode without
-  per-browser plugins or command-line invocation hacks that defeat
-  the "just works" property of `open <url>`.
-- **Defeating EDR / corporate monitoring.** Enterprise endpoint tools
-  see everything. USBuddy doesn't try to hide from them.
+- Forensic guarantees. USBuddy does not implement countermeasures
+  against post-eject forensic analysis of the host.
+- Browser private-mode enforcement. The runtime requests the host
+  to open a URL; it cannot reliably force the resulting browser to
+  use private mode without per-browser invocation hacks that
+  break the default-browser model.
+- Enterprise endpoint detection and response systems. USBuddy
+  does not attempt to evade EDR or corporate monitoring.
