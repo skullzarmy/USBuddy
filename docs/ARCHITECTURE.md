@@ -1,97 +1,221 @@
-# USBuddy Architecture
+# Architecture
 
-## Scope boundary for v0.1.0
+This document explains how USBuddy is structured and why the load-bearing
+decisions are what they are. If you're contributing code, auditing the
+project, or trying to understand whether the privacy claims hold up, start
+here.
 
-USBuddy v0.1.0 ships the CLI-first foundation, the portable runtime wrapper, the browser chat surface, and the core data formats required to create, inspect, and evolve an install on removable media. Native installer GUI/TUI parity, automated footprint regression, and hardware-backed RAM threshold tuning remain explicitly deferred until the first working release proves out the core lifecycle.
+## Two programs, one core
 
-## Two-program model
+USBuddy is two executables with opposite constraints:
 
-USBuddy is intentionally split into two executables with opposite constraints:
+The **installer** runs once on a host, online. It can be heavy — it
+talks to the network, may need elevated privileges to format removable
+media, ships a desktop GUI, and stays on the host as a normal
+application. There are three installer surfaces (`usbuddy-installer-cli`,
+`usbuddy-installer-tui`, `usbuddy-installer-gui`) that are thin views
+over the same Rust core.
 
-- **Installer**: online-capable, may require elevation, formats removable media, downloads verified assets, writes the USB layout, and manages upgrades and rollback.
-- **Runtime**: launched from the drive, runs as an unprivileged user, defaults to localhost-only behavior, keeps session state in memory, and treats the host as disposable.
+The **runtime** runs ephemerally from the USB drive on whatever host
+you plug into. It can't assume privileges, can't write to the host, has
+to fit in a tiny binary, and has to leave nothing behind when you
+quit. It binds to localhost only, serves a static SPA from RAM, spawns
+`llama-server` against a model on the stick, and shuts down cleanly.
 
-Both programs are built on the same Rust core and expose the same operations through a CLI-first design. Any later GUI or TUI surfaces stay thin and call into the core instead of reimplementing logic.
+Conflating these two programs would breed bad architecture — they need
+opposite things from the host. Keeping them separate is half the reason
+USBuddy can credibly claim "no footprint."
 
-## Workspace layout
+Both programs are built on `crates/usbuddy-core`. The core owns
+everything that has correctness or security consequences: catalog
+parsing and integrity checks, atomic file writes, USB layout
+resolution, license preference persistence, RAM-fit estimation,
+release manifest handling, platform detection, GGUF metadata parsing.
+Surfaces (CLI/TUI/GUI/runtime) call into the core — they never
+duplicate logic.
 
-- `crates/usbuddy-core`: shared types and operations.
-- `crates/usbuddy-installer-cli`: CLI entrypoint for install, inspection, validation, and rollback workflows.
-- `crates/usbuddy-runtime`: localhost-only runtime wrapper and static SPA host.
-- `ui/web`: static browser UI bundled with runtime releases.
-- `schemas/`: JSON schema definitions for catalogs and release metadata.
-- `fixtures/`: sample catalogs and layout state used by tests.
-- `examples/`: sample `current.json`, `version.json`, and catalog snapshots.
+## Drive layout
 
-## Shared core responsibilities
+The drive is treated as a shadow tree. Each runtime version installs
+into its own subdirectory under `versions/`, and a single
+`current.json` pointer at the root selects which version is active.
+That single-pointer model is what makes updates atomic and rollback
+trivial.
 
-The shared core owns:
+```
+/USBuddy/
+├── current.json                ← {"active": "0.2.0", "previous": "0.1.0", "schema": 1}
+├── USBuddy.command             ← launchers for macOS / Linux / Windows
+├── USBuddy.sh                    that detect arch and exec the right runtime
+├── USBuddy.bat
+├── versions/
+│   ├── 0.1.0/
+│   │   ├── bin/<os>-<arch>/    ← runtime binary + llama-server per platform
+│   │   └── ui/                 ← static SPA pinned to this version
+│   └── 0.2.0/                  ← parallel tree for next version
+├── models/                     ← shared across versions, sha256-keyed filenames
+├── catalog.json                ← catalog snapshot; refreshable independently
+├── .usbuddy/                   ← user state that survives runtime upgrades
+│   ├── license-prefs.toml      ← intentionally plain-text and greppable
+│   ├── runtime-prefs.toml      ← incognito vs. saving toggle
+│   ├── chats/                  ← saved conversations when memory is enabled
+│   ├── advisories-seen.json    ← dismissed advisories
+│   └── hf-token                ← only present if the user added one
+└── README.txt
+```
 
-1. Catalog parsing and compatibility validation.
-2. Release manifest parsing and version comparison.
-3. SHA256 hashing and verification.
-4. Atomic file writes for pointer state such as `current.json`.
-5. USB layout path resolution and shared directory creation.
-6. License preference and acceptance record persistence.
-7. Platform and architecture reporting.
-8. RAM-fit estimation using detected or supplied available memory.
-
-This layer stays UI-agnostic and can be called by CLI, GUI, TUI, or runtime services.
-
-## Canonical USB layout
-
-The installer and runtime both treat the following paths as authoritative:
-
-- `current.json`: active and previous runtime pointers.
-- `versions/{version}/`: immutable runtime trees.
-- `models/`: shared model storage and local model provenance metadata.
-- `.usbuddy/`: user-managed state such as trust, token, advisory dismissal, and license preferences.
-- `catalog.json`: cached catalog snapshot.
-
-The core layout manager creates these directories, validates their presence, and reads or writes schema-versioned metadata files atomically.
+Versioned content (runtime, `llama-server`, the SPA bundle) lives under
+`versions/{ver}/` and is tested as a unit. Shared content (models,
+catalog, user state) lives at the drive root and persists across
+runtime upgrades. The launcher shims at the root are dumb — they
+read `current.json` and exec the matching binary; they almost never
+change.
 
 ## Lifecycle
 
 ### Install
 
-1. Detect or receive a removable drive root.
-2. Confirm formatting requirements and existing-install posture.
-3. Create the shared USB layout.
-4. Stage a runtime version under `versions/{version}`.
-5. Atomically write `current.json` to activate the installed version.
+The installer takes a drive root, lays down the directory structure,
+seeds `current.json` with a schema-versioned pointer, writes the
+catalog snapshot, drops the three launcher scripts, then stages the
+runtime under `versions/{version}/bin/<os>-<arch>/`. `llama-server` is
+downloaded from pinned `llama.cpp` releases per supported host
+(`engine install <drive> --target all` populates every platform from
+one host so the stick is portable).
 
-### Runtime start
+### Launch
 
-1. Read `current.json` and resolve the active runtime tree.
-2. Load and validate `catalog.json` if present.
-3. Discover drop-in `.gguf` files under `models/`.
-4. Evaluate RAM-fit against the chosen model and context settings.
-5. Start the localhost-only wrapper and expose the chat surface.
+When the user double-clicks a launcher, the script reads `current.json`,
+locates `versions/<active>/bin/<os>-<arch>/usbuddy-runtime`, and execs
+it with `--drive <self> --open-browser`. The runtime opens its tray
+icon, starts an HTTP server on `127.0.0.1:8765`, opens the user's
+default browser, and waits. It does not spawn `llama-server` until the
+user clicks **Launch** in the UI.
+
+### Engine load
+
+When the user picks a model and clicks Launch, the runtime:
+
+1. Resolves the model file under `models/` and verifies its size.
+2. Reads the GGUF header to get the real architecture (layers, heads,
+   KV heads, embedding dim, trained context length).
+3. Runs the RAM-fit advisor against detected memory using the model's
+   actual KV-cache shape. Red band aborts the launch.
+4. Spawns `llama-server` with the chosen model and context size.
+5. **Polls `llama-server`'s `/health` endpoint until it returns 200.**
+   Without this poll, the UI would unlock the chat input while
+   `llama-server` is still loading weights (5–25 s), and the first
+   message would race the load and come back as a 503 error.
+6. Returns success to the UI.
 
 ### Upgrade
 
-1. Parse a release manifest.
-2. Stage the new version under `versions/{new}.tmp`.
-3. Verify hashes.
-4. Rename to `versions/{new}`.
-5. Atomically swap `current.json` to set `active={new}` and `previous={old}`.
+The installer parses a release manifest, stages the new version under
+`versions/{new}.tmp/`, verifies SHA256 against the manifest, renames
+the directory to `versions/{new}/`, and atomically rewrites
+`current.json` with `active: {new}, previous: {old}`. Models, catalog,
+license preferences, HF token, and saved chats are all under shared
+roots and never touched.
+
+If the install is interrupted before the rename, the `.tmp` directory
+is inert and gets cleaned up next time. If it's interrupted between
+the rename and the `current.json` rewrite, the new tree is on disk
+but the previous version is still active — the installer detects this
+on next run and offers to activate or discard.
 
 ### Rollback
 
-Rollback is a single atomic write that swaps `active` and `previous` in `current.json`. Shared user state and models are untouched.
+A single atomic write to `current.json` that swaps `active` and
+`previous`. No file copies. The N-1 version is kept on the drive by
+default precisely so rollback is one click.
 
-## Failure handling
+## Load-bearing invariants
 
-- **Unknown schema**: fail closed with a clear upgrade message.
-- **Missing runtime tree**: keep the install readable but refuse activation.
-- **Interrupted staged update**: leave `.tmp` state inert; operators can activate or discard later.
-- **Low RAM / red band**: runtime refuses model launch and suggests a smaller configuration.
-- **Drive removal during runtime**: runtime must avoid writes to the drive during sessions so sudden disappearance cannot corrupt state.
+These are the rules the implementation enforces and that any change
+to USBuddy has to preserve:
 
-## Security posture
+- **Catalog integrity.** Every catalog entry carries a `sha256`.
+  Models are verified on download and on every launch. The schema
+  version is `usbuddy.catalog/v1`; unknown schemas hard-fail rather
+  than degrade silently.
 
-- Network behavior is explicit and user-initiated.
-- Runtime binds only to localhost.
-- Hash verification is mandatory for managed downloads.
-- Licenses are accepted visibly and persisted with the license hash that was reviewed.
-- “Zero footprint” is implemented as **no intentional persistence**, not as a guarantee that the host OS leaves no incidental traces.
+- **RAM-fit gating.** Models that would spill to swap refuse to load.
+  Swap-to-disk is the #1 way a local LLM leaks weights to the host;
+  this is enforcement, not advice. The advisor parses the GGUF header
+  to get the model's real KV-cache shape — no fudge constants.
+
+- **No background work.** The runtime never makes a network call the
+  user didn't ask for. There is no telemetry, no auto-update check,
+  no catalog refresh in the background. Every network operation is
+  explicitly initiated.
+
+- **Yank survivability.** Every drive write goes through the atomic
+  rename pattern in `usbuddy_core::atomic`. The runtime never writes
+  to the drive during an active chat session. A mid-update yank leaves
+  the previous version active and launchable.
+
+- **Idle unload.** After 5 minutes of no chat activity, the runtime
+  `SIGTERM`s `llama-server` so model weights leave mlocked RAM. This
+  is default-on because a stick plugged into a borrowed laptop while
+  the owner walks away is exactly the threat model that "no footprint"
+  is supposed to defeat. Configurable via `--idle-timeout-secs`;
+  `0` disables.
+
+- **Bundled engine.** `llama-server` is pinned per runtime version and
+  not independently updatable. GGUF format and the server API drift
+  across `llama.cpp` releases; testing a matrix of every wrapper
+  version against every engine version doesn't scale. If a CVE drops
+  in `llama.cpp`, USBuddy cuts a patch release of the runtime.
+
+- **Plaintext local prefs.** `license-prefs.toml` and
+  `runtime-prefs.toml` are intentionally human-readable. Anyone
+  borrowing the drive can `grep` them to see what's been agreed to
+  on their behalf and whether chat persistence is on.
+
+## What's not USBuddy
+
+We made conscious choices not to use certain stacks. Each is also
+documented in the README's comparison section; here are the
+architectural reasons:
+
+- **Ollama** installs a system service, manages a daemon, writes to
+  system install paths, and persists model state in the home
+  directory. Every one of those is the opposite of what USBuddy
+  needs.
+
+- **llamafile** ships weights and engine as one APE binary. That
+  makes updates coarse and trips antivirus on multiple hosts. We
+  also lose the ability to swap models without redownloading.
+
+- **Electron / Tauri / Wails** for the chat UI would either bundle
+  Chromium (a per-platform 100 MB+ runtime, a tray dependency, an
+  update vector) or depend on the system WebView. On Linux the
+  system WebView is WebKitGTK — the exact category of system
+  dependency USBuddy can't have.
+
+- **A native GUI toolkit (GTK/Qt)** for the installer would force
+  system deps on every Linux host. `egui` is bundled into the
+  installer binary and depends on nothing.
+
+The chat surface is a static SPA opened in the user's default browser.
+The installer GUI uses `egui` so it ships as one binary with no
+runtime dependencies.
+
+## Deferred for v0.1.0
+
+Three things are intentionally out of scope for the first tagged
+release:
+
+- **Automated host-snapshot diffing across all three OSes.** The
+  Linux footprint job runs in CI; Windows Sandbox and macOS
+  snapshot tooling are tracked follow-ups.
+
+- **Hardware-backed RAM threshold tuning.** The bands (green ≥ 20%
+  margin, yellow / red as defined in `usbuddy_core::ram`) are best
+  estimates from `llama.cpp`'s published numbers. Real-hardware
+  measurement will refine the constants without changing the API.
+
+- **Cross-host runtime installation from a single host.**
+  `install-runtime` today copies the *host's* build. Populating
+  every platform from one host requires either pulling from a
+  published release or running `install-runtime` on each host.
