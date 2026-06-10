@@ -441,17 +441,30 @@ chatForm.addEventListener('submit', async (e) => {
 
 function appendMessage(role, content) {
   emptyState.hidden = true;
-  const wrap = document.createElement('div');
-  wrap.className = `msg ${role}`;
+  // .msg is the full-width row (carries optional background tint); .msg-inner
+  // is the max-width centered flex that holds the avatar and the body.
+  const row = document.createElement('div');
+  row.className = `msg ${role}`;
+  const inner = document.createElement('div');
+  inner.className = 'msg-inner';
   const role_el = document.createElement('div');
   role_el.className = 'msg-role';
-  role_el.textContent = role === 'user' ? 'You' : 'AI';
+  if (role === 'user') {
+    role_el.textContent = 'You';
+  } else {
+    const img = document.createElement('img');
+    img.src = '/assets/icon.png';
+    img.alt = 'USBuddy';
+    img.className = 'msg-role-avatar';
+    role_el.appendChild(img);
+  }
   const body = document.createElement('div');
   body.className = 'msg-body';
   body.innerHTML = renderMarkdown(content);
   wireCopyButtons(body);
-  wrap.append(role_el, body);
-  chatMessages.appendChild(wrap);
+  inner.append(role_el, body);
+  row.appendChild(inner);
+  chatMessages.appendChild(row);
   maybeScrollToBottom();
   return body;
 }
