@@ -1,6 +1,7 @@
 pub mod atomic;
 pub mod catalog;
 pub mod download;
+pub mod eject;
 pub mod engine;
 pub mod error;
 pub mod gguf;

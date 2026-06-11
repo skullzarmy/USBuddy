@@ -57,6 +57,7 @@ const stopGenBtn = $('stop-gen-btn');
 const statusLine = $('status-line');
 const newChatBtn = $('new-chat');
 const quitBtn = $('quit-btn');
+const ejectBtn = $('eject-btn');
 const incognitoToggle = $('incognito-toggle');
 const chatsList = $('chats-list');
 const chatsEmpty = $('chats-empty');
@@ -492,23 +493,68 @@ stopGenBtn.addEventListener('click', () => {
 
 quitBtn.addEventListener('click', async () => {
   if (!confirm('Quit USBuddy? This stops the runtime entirely.')) return;
-  quitBtn.disabled = true;
-  quitBtn.textContent = 'Shutting down…';
+  await shutdownRuntime(quitBtn, '/api/shutdown', 'USBuddy stopped. You can close this tab.');
+});
+
+ejectBtn.addEventListener('click', async () => {
+  if (
+    !confirm(
+      'Quit USBuddy and eject the USB drive?\n\n' +
+        'The runtime stops and the OS ejects the drive a moment later. ' +
+        'Wait for the drive to disappear before unplugging it.'
+    )
+  )
+    return;
+  await shutdownRuntime(
+    ejectBtn,
+    '/api/shutdown-eject',
+    'USBuddy stopped — ejecting the drive. Wait a few seconds for it to disappear, then unplug.'
+  );
+});
+
+async function shutdownRuntime(btn, endpoint, doneMessage) {
+  btn.disabled = true;
+  btn.textContent = 'Shutting down…';
   if (inflight) inflight.abort();
   try {
-    await fetch('/api/shutdown', { method: 'POST' });
+    await fetch(endpoint, { method: 'POST' });
   } catch {
     /* expected — connection will drop */
   }
   document.body.innerHTML =
     '<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:16px;font-family:system-ui;color:#9aa0a6;background:#0f1115;">' +
     '<img src="/assets/icon.png" style="width:120px;opacity:.6">' +
-    '<div>USBuddy stopped. You can close this tab.</div></div>';
-});
+    `<div style="max-width:420px;text-align:center;line-height:1.5;">${doneMessage}</div></div>`;
+  // Close the tab once the farewell has been visible for a beat. Browsers
+  // only honor window.close() for tabs without navigation history — which
+  // is exactly how the launcher opens us. If the user got here some other
+  // way the call is silently ignored and the farewell page stands.
+  setTimeout(() => window.close(), 1500);
+}
 
 function setStreaming(streaming) {
   stopGenBtn.hidden = !streaming;
   sendBtn.hidden = streaming;
+}
+
+// Chat templates (Gemma, Llama, …) hard-reject histories whose roles don't
+// strictly alternate user/assistant. A crash or abort mid-stream can persist
+// a chat that ends on a dangling user message; resuming it would send two
+// consecutive user turns. Sanitize at send time: drop empty messages, then
+// merge consecutive same-role messages. The on-screen transcript and the
+// saved chat keep the real shape — only the model payload is normalized.
+function toModelMessages(history) {
+  const out = [];
+  for (const m of history) {
+    if (!m.content) continue;
+    const prev = out[out.length - 1];
+    if (prev && prev.role === m.role) {
+      prev.content += '\n\n' + m.content;
+    } else {
+      out.push({ role: m.role, content: m.content });
+    }
+  }
+  return out;
 }
 
 async function streamReply() {
@@ -531,7 +577,7 @@ async function streamReply() {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         model: selectedModelId,
-        messages: chatHistory,
+        messages: toModelMessages(chatHistory),
         stream: true,
       }),
       signal: inflight.signal,

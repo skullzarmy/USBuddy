@@ -59,6 +59,7 @@
           <div class="mono small" id="platform">—</div>
           <div class="mono small">v<span id="version">—</span></div>
           <button id="quit-btn" class="btn btn-ghost btn-quit" title="Stop the USBuddy runtime entirely">⏻ Quit USBuddy</button>
+          <button id="eject-btn" class="btn btn-ghost btn-quit" title="Stop the USBuddy runtime and eject the USB drive so it is safe to unplug">⏏ Quit &amp; eject drive</button>
         </div>
       </aside>
 
@@ -82,7 +83,10 @@
               <span class="incognito-icon" aria-hidden="true">💾</span>
               <span class="incognito-label">Enable memory</span>
             </button>
-            <button id="new-chat" class="icon-btn" title="New chat" aria-label="New chat">+</button>
+            <button id="new-chat" class="icon-btn new-chat-btn" title="Start a fresh conversation" aria-label="New chat">
+              <span class="new-chat-icon" aria-hidden="true">+</span>
+              <span class="new-chat-label">New chat</span>
+            </button>
           </div>
         </header>
 

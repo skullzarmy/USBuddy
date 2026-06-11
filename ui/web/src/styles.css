@@ -641,3 +641,17 @@ body {
   border-color: rgba(76, 175, 80, 0.3);
 }
 .incognito-toggle .incognito-label { font-weight: 600; letter-spacing: .02em; }
+
+.new-chat-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  width: auto;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-dim);
+  border: 1px solid var(--border-soft);
+}
+.new-chat-btn .new-chat-icon { font-size: 15px; line-height: 1; }
+.new-chat-btn .new-chat-label { font-weight: 600; letter-spacing: .02em; }

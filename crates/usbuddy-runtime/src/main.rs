@@ -125,6 +125,22 @@ struct RuntimeState {
     /// HTTP server to exit cleanly. Lets the chat UI quit the runtime
     /// without any external supervisor.
     shutdown: Arc<Notify>,
+    /// Parameters of the most recent successful launch. Lets the chat proxy
+    /// wake llama-server transparently after the idle-unload (or a crash)
+    /// instead of failing with "unreachable".
+    last_launch: Arc<Mutex<Option<LaunchParams>>>,
+    /// Serializes spawn/health-wait so concurrent chat requests arriving
+    /// after an idle-unload trigger exactly one relaunch.
+    launch_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+/// Everything needed to (re)start llama-server for a given model.
+#[derive(Clone)]
+struct LaunchParams {
+    model_id: String,
+    model_path: PathBuf,
+    model_bytes: u64,
+    context_tokens: u32,
 }
 
 fn now_epoch_secs() -> u64 {
@@ -189,9 +205,18 @@ fn run_serve(
                     std::process::exit(1);
                 }
             };
-            if let Err(e) = rt.block_on(serve_http(server_state, port, idle_timeout_secs)) {
-                eprintln!("[fatal] HTTP server exited with error: {e}");
-            }
+            let code = match rt.block_on(serve_http(server_state, port, idle_timeout_secs)) {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("[fatal] HTTP server exited with error: {e}");
+                    1
+                }
+            };
+            // The main thread is parked in the tray event loop and never
+            // returns on its own — once the HTTP server has shut down
+            // (web Quit, Ctrl-C), the whole process must go with it. This
+            // is also what frees the drive so a scheduled eject can succeed.
+            std::process::exit(code);
         })?;
 
     eprintln!("USBuddy runtime serving on {url}");
@@ -257,6 +282,7 @@ async fn serve_http(
         .route("/api/launch", post(api_launch))
         .route("/api/stop", post(api_stop))
         .route("/api/shutdown", post(api_shutdown))
+        .route("/api/shutdown-eject", post(api_shutdown_eject))
         .route("/api/chat", axum::routing::any(api_chat_proxy))
         .route("/api/chat/{*rest}", axum::routing::any(api_chat_proxy))
         .route("/api/prefs", get(api_get_prefs).put(api_put_prefs))
@@ -299,6 +325,8 @@ fn load_state(drive: PathBuf, idle_timeout_secs: u64) -> anyhow::Result<RuntimeS
         last_activity: Arc::new(AtomicU64::new(now_epoch_secs())),
         idle_timeout_secs,
         shutdown: Arc::new(Notify::new()),
+        last_launch: Arc::new(Mutex::new(None)),
+        launch_lock: Arc::new(tokio::sync::Mutex::new(())),
     })
 }
 
@@ -430,8 +458,6 @@ async fn api_launch(
     touch_activity(&state);
     let model_path = resolve_model_path(&state, &req.model_id)?;
 
-    // RAM-fit check.
-    let memory = detect_memory();
     let model_bytes = req.model_size_bytes.unwrap_or_else(|| {
         state
             .catalog
@@ -445,11 +471,43 @@ async fn api_launch(
             .or_else(|| std::fs::metadata(&model_path).ok().map(|m| m.len()))
             .unwrap_or(0)
     });
+    let params = LaunchParams {
+        model_id: req.model_id.clone(),
+        model_path,
+        model_bytes,
+        context_tokens: req.context_tokens.unwrap_or(4_096),
+    };
+
+    let _launching = state.launch_lock.lock().await;
+    let decision = start_llama(&state, &params).await?;
+    *state.last_launch.lock().unwrap() = Some(params);
+
+    let band_label = match decision.band {
+        FitBand::Green => "green",
+        FitBand::Yellow => "yellow",
+        FitBand::Red => "red",
+    };
+
+    Ok(Json(LaunchResponse {
+        launched: true,
+        model_id: req.model_id,
+        llama_port: LLAMA_SERVER_PORT,
+        ram_band: band_label.into(),
+    }))
+}
+
+/// Spawns llama-server for `params` and blocks until it is actually serving.
+///
+/// Re-runs the RAM-fit gate on every (re)start — available memory on the
+/// host may have shifted since the original launch, and Red still refuses
+/// (swap-to-disk is the #1 footprint leak). Callers must hold `launch_lock`.
+async fn start_llama(state: &RuntimeState, params: &LaunchParams) -> Result<RamDecision, AppError> {
+    let memory = detect_memory();
     let decision = assess_fit(
         memory,
         RamEstimateInput {
-            model_bytes,
-            context_tokens: req.context_tokens.unwrap_or(4_096),
+            model_bytes: params.model_bytes,
+            context_tokens: params.context_tokens,
             kv_bytes_per_token: 131_072,
             runtime_overhead_bytes: 512 * 1024 * 1024,
         },
@@ -462,16 +520,16 @@ async fn api_launch(
         )));
     }
 
-    let llama_bin = resolve_llama_server_bin(&state)?;
+    let llama_bin = resolve_llama_server_bin(state)?;
     kill_llama_server(&state.llama_process);
 
     let child = std::process::Command::new(&llama_bin)
         .arg("--model")
-        .arg(&model_path)
+        .arg(&params.model_path)
         .arg("--port")
         .arg(LLAMA_SERVER_PORT.to_string())
         .arg("--ctx-size")
-        .arg(req.context_tokens.unwrap_or(4_096).to_string())
+        .arg(params.context_tokens.to_string())
         .arg("--host")
         .arg("127.0.0.1")
         .arg("--no-webui")
@@ -492,19 +550,56 @@ async fn api_launch(
             "llama-server failed to become ready: {reason}"
         )));
     }
+    Ok(decision)
+}
 
-    let band_label = match decision.band {
-        FitBand::Green => "green",
-        FitBand::Yellow => "yellow",
-        FitBand::Red => "red",
+/// Wake-on-request: if llama-server is gone (idle-unloaded after 5 min, or
+/// crashed), relaunch it with the last launch parameters before proxying.
+/// No-op while it's alive. Serialized via `launch_lock` so a burst of chat
+/// requests after an idle stop triggers exactly one reload.
+async fn ensure_llama_running(state: &RuntimeState) -> Result<(), AppError> {
+    let _launching = state.launch_lock.lock().await;
+
+    let alive = {
+        let mut guard = state
+            .llama_process
+            .lock()
+            .map_err(|_| AppError::internal("llama-server process mutex poisoned"))?;
+        match guard.as_mut() {
+            Some(child) => match child.try_wait() {
+                Ok(None) => true,
+                // Exited (crash) — drop the dead handle so we relaunch below.
+                Ok(Some(_)) => {
+                    guard.take();
+                    false
+                }
+                Err(e) => {
+                    return Err(AppError::internal(format!("inspecting llama-server: {e}")));
+                }
+            },
+            None => false,
+        }
     };
+    if alive {
+        return Ok(());
+    }
 
-    Ok(Json(LaunchResponse {
-        launched: true,
-        model_id: req.model_id,
-        llama_port: LLAMA_SERVER_PORT,
-        ram_band: band_label.into(),
-    }))
+    let params = state
+        .last_launch
+        .lock()
+        .map_err(|_| AppError::internal("last-launch mutex poisoned"))?
+        .clone()
+        .ok_or_else(|| {
+            AppError::bad_request("no model is loaded — launch a model before chatting")
+        })?;
+
+    eprintln!(
+        "USBuddy: waking llama-server for model '{}' (was idle-unloaded or exited)",
+        params.model_id
+    );
+    start_llama(state, &params).await?;
+    touch_activity(state);
+    Ok(())
 }
 
 /// Polls `/health` on the spawned llama-server until it returns 200, the
@@ -567,6 +662,11 @@ async fn wait_for_llama_ready(process: &Mutex<Option<Child>>) -> Result<(), Stri
 }
 
 async fn api_stop(State(state): State<Arc<RuntimeState>>) -> Json<serde_json::Value> {
+    // Forget the launch params too: an explicit stop must stay stopped —
+    // wake-on-request is only for idle unloads and crashes.
+    if let Ok(mut guard) = state.last_launch.lock() {
+        guard.take();
+    }
     kill_llama_server(&state.llama_process);
     Json(serde_json::json!({ "stopped": true }))
 }
@@ -578,11 +678,37 @@ async fn api_stop(State(state): State<Arc<RuntimeState>>) -> Json<serde_json::Va
 async fn api_shutdown(State(state): State<Arc<RuntimeState>>) -> Json<serde_json::Value> {
     kill_llama_server(&state.llama_process);
     state.shutdown.notify_waiters();
-    tokio::spawn(async {
-        tokio::time::sleep(Duration::from_millis(250)).await;
+    spawn_exit_backstop();
+    Json(serde_json::json!({ "shutting_down": true }))
+}
+
+/// Hard-exit fallback for the web shutdown paths. The normal exit happens
+/// when graceful shutdown completes and the HTTP thread calls
+/// `process::exit` — but a wedged in-flight connection (e.g. an SSE stream
+/// in another tab) can stall graceful shutdown indefinitely. An OS thread
+/// (not a tokio task — those die with the runtime) guarantees we still go.
+fn spawn_exit_backstop() {
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_millis(750));
         std::process::exit(0);
     });
-    Json(serde_json::json!({ "shutting_down": true }))
+}
+
+/// Like `/api/shutdown`, but also asks the OS to eject the drive. The eject
+/// runs in a detached host-resident helper that retries until the runtime
+/// (which lives on the drive) has fully exited and the volume can let go.
+async fn api_shutdown_eject(State(state): State<Arc<RuntimeState>>) -> Json<serde_json::Value> {
+    kill_llama_server(&state.llama_process);
+    let eject_scheduled = match usbuddy_core::eject::spawn_detached_eject(state.layout.root()) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("USBuddy: failed to schedule drive eject: {e}");
+            false
+        }
+    };
+    state.shutdown.notify_waiters();
+    spawn_exit_backstop();
+    Json(serde_json::json!({ "shutting_down": true, "eject_scheduled": eject_scheduled }))
 }
 
 /// Transparent reverse-proxy: `/api/chat/**` → llama-server `/v1/chat/**`.
@@ -594,6 +720,7 @@ async fn api_chat_proxy(
     body: Body,
 ) -> Result<Response, AppError> {
     touch_activity(&state);
+    ensure_llama_running(&state).await?;
     let client = reqwest::Client::new();
     let path = uri.path().replacen("/api/chat", "/v1/chat", 1);
     let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
