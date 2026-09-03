@@ -37,6 +37,35 @@ profile = "aligned"
 license = { spdx = "Apache-2.0", title = "Apache License 2.0", url = "https://www.apache.org/licenses/LICENSE-2.0.txt", requires_attribution = false }
 
 [[models]]
+id = "qwen3-8b-q4_k_m"
+family_id = "qwen3-8b"
+display_name = "Qwen 3 8B Q4_K_M"
+version = "1"
+hf_repo = "bartowski/Qwen_Qwen3-8B-GGUF"
+hf_path = "Qwen_Qwen3-8B-Q4_K_M.gguf"
+prompt_template = "chatml"
+capabilities = ["chat", "function_calling", "long_context", "reasoning"]
+aliases = ["qwen3-8b-q4"]
+profile = "aligned"
+license = { spdx = "Apache-2.0", title = "Apache License 2.0", url = "https://www.apache.org/licenses/LICENSE-2.0.txt", requires_attribution = false }
+
+# DeepSeek's full V3/R1 models are 671B-parameter MoE — far past any
+# consumer RAM budget. This is the official R1-0528 distill onto Qwen3-8B:
+# genuinely MIT-licensed and small enough for the green band on 16 GB hosts.
+[[models]]
+id = "deepseek-r1-0528-qwen3-8b-q4_k_m"
+family_id = "deepseek-r1-0528-qwen3-8b"
+display_name = "DeepSeek R1 0528 (Qwen3 8B distill) Q4_K_M"
+version = "1"
+hf_repo = "bartowski/deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-GGUF"
+hf_path = "deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf"
+prompt_template = "deepseek"
+capabilities = ["chat", "reasoning"]
+aliases = ["deepseek-r1-8b-q4"]
+profile = "aligned"
+license = { spdx = "MIT", title = "MIT License (DeepSeek)", url = "https://huggingface.co/deepseek-ai/DeepSeek-R1-0528-Qwen3-8B/raw/main/LICENSE", requires_attribution = false }
+
+[[models]]
 id = "mistral-7b-instruct-v0.3-q4_k_m"
 family_id = "mistral-7b-instruct-v0.3"
 display_name = "Mistral 7B Instruct v0.3 Q4_K_M"

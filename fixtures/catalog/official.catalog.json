@@ -1,6 +1,6 @@
 {
   "schema": "usbuddy.catalog/v1",
-  "generated_at": "2026-06-09T05:17:52Z",
+  "generated_at": "2026-09-03T08:53:45Z",
   "source": "repository",
   "runtime": {
     "min": "0.1.0",
@@ -36,6 +36,66 @@
       "source": {
         "kind": "official",
         "url": "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+      }
+    },
+    {
+      "id": "qwen3-8b-q4_k_m",
+      "family_id": "qwen3-8b",
+      "display_name": "Qwen 3 8B Q4_K_M",
+      "version": "1",
+      "file_name": "Qwen_Qwen3-8B-Q4_K_M.gguf",
+      "sha256": "54fffa050078e984116639c83dfb64b5aa6d4cd474e018b076777c632bbccccd",
+      "size_bytes": 5027784224,
+      "prompt_template": "chatml",
+      "capabilities": [
+        "chat",
+        "function_calling",
+        "long_context",
+        "reasoning"
+      ],
+      "aliases": [
+        "qwen3-8b-q4"
+      ],
+      "profile": "aligned",
+      "license": {
+        "spdx": "Apache-2.0",
+        "title": "Apache License 2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "requires_attribution": false
+      },
+      "source": {
+        "kind": "official",
+        "url": "https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf"
+      }
+    },
+    {
+      "id": "deepseek-r1-0528-qwen3-8b-q4_k_m",
+      "family_id": "deepseek-r1-0528-qwen3-8b",
+      "display_name": "DeepSeek R1 0528 (Qwen3 8B distill) Q4_K_M",
+      "version": "1",
+      "file_name": "deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf",
+      "sha256": "e0c2f118fd59f3a16f20d18b0e7f79e960c84bc8c66d94fd71a691e05151d54f",
+      "size_bytes": 5027783040,
+      "prompt_template": "deepseek",
+      "capabilities": [
+        "chat",
+        "reasoning"
+      ],
+      "aliases": [
+        "deepseek-r1-8b-q4"
+      ],
+      "profile": "aligned",
+      "license": {
+        "spdx": "MIT",
+        "title": "MIT License (DeepSeek)",
+        "url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-0528-Qwen3-8B/raw/main/LICENSE",
+        "sha256": "f2c6c602815669d292889e5be8c802f2ed950653b77999b1584e8e6aed25d040",
+        "requires_attribution": false
+      },
+      "source": {
+        "kind": "official",
+        "url": "https://huggingface.co/bartowski/deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-GGUF/resolve/main/deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf"
       }
     },
     {
@@ -89,7 +149,7 @@
         "spdx": "LicenseRef-Llama-Community",
         "title": "Llama Community License",
         "url": "https://ai.meta.com/llama/license/",
-        "sha256": "5a0970fdec297b47f5cd985af0c572fd2891a4de1c733f9615383ff0625a0df0",
+        "sha256": "ef5217603c007fa39f488de0b6310949a39ae0f7195606bd4920cd7474f9c172",
         "requires_attribution": true
       },
       "source": {
@@ -151,7 +211,7 @@
         "spdx": "LicenseRef-Llama-Community",
         "title": "Llama Community License",
         "url": "https://ai.meta.com/llama/license/",
-        "sha256": "5a0970fdec297b47f5cd985af0c572fd2891a4de1c733f9615383ff0625a0df0",
+        "sha256": "ef5217603c007fa39f488de0b6310949a39ae0f7195606bd4920cd7474f9c172",
         "requires_attribution": true
       },
       "source": {
@@ -179,7 +239,7 @@
         "spdx": "LicenseRef-Gemma",
         "title": "Gemma Terms of Use",
         "url": "https://ai.google.dev/gemma/terms",
-        "sha256": "2b4416120a1ab991f985be87d68d06987ee1ffb11a198567581d54fcb993e1e2",
+        "sha256": "1de1f7f535866b60decbc89a11099c22e8a3ceb4cb0e053adb841c0a247847da",
         "requires_attribution": true
       },
       "source": {
