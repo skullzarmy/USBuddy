@@ -1110,7 +1110,7 @@ impl App {
                 egui::Frame::new()
                     .fill(egui::Color32::from_rgb(0x12, 0x16, 0x1d))
                     .stroke(egui::Stroke::new(
-                        1.0,
+                        1.0_f32,
                         egui::Color32::from_rgb(0x2a, 0x31, 0x3c),
                     ))
                     .inner_margin(egui::Margin::same(16)),
@@ -1251,7 +1251,7 @@ impl App {
                 egui::Frame::new()
                     .fill(egui::Color32::from_rgb(0x0a, 0x0d, 0x12))
                     .stroke(egui::Stroke::new(
-                        1.0,
+                        1.0_f32,
                         egui::Color32::from_rgb(0x2a, 0x31, 0x3c),
                     ))
                     .inner_margin(egui::Margin::symmetric(16, 10)),
@@ -1362,7 +1362,7 @@ impl App {
         egui::Frame::new()
             .fill(egui::Color32::from_rgb(0x2a, 0x24, 0x12))
             .stroke(egui::Stroke::new(
-                1.0,
+                1.0_f32,
                 egui::Color32::from_rgb(0xff, 0xd2, 0x3f),
             ))
             .corner_radius(egui::CornerRadius::same(10))
@@ -1669,7 +1669,7 @@ impl App {
         egui::Frame::new()
             .fill(egui::Color32::from_rgb(0x1a, 0x1f, 0x28))
             .stroke(egui::Stroke::new(
-                1.0,
+                1.0_f32,
                 egui::Color32::from_rgb(0x2a, 0x31, 0x3c),
             ))
             .corner_radius(egui::CornerRadius::same(14))
@@ -2263,7 +2263,7 @@ fn card<R>(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui) -> R
     egui::Frame::new()
         .fill(egui::Color32::from_rgb(0x1a, 0x1f, 0x28))
         .stroke(egui::Stroke::new(
-            1.0,
+            1.0_f32,
             egui::Color32::from_rgb(0x2a, 0x31, 0x3c),
         ))
         .corner_radius(egui::CornerRadius::same(10))
@@ -2291,26 +2291,26 @@ fn apply_theme(ctx: &egui::Context) {
     visuals.window_fill = Color32::from_rgb(0x16, 0x1b, 0x22);
     visuals.extreme_bg_color = Color32::from_rgb(0x0a, 0x0d, 0x12);
     visuals.faint_bg_color = Color32::from_rgb(0x1a, 0x1f, 0x28);
-    visuals.window_stroke = Stroke::new(1.0, Color32::from_rgb(0x2a, 0x31, 0x3c));
+    visuals.window_stroke = Stroke::new(1.0_f32, Color32::from_rgb(0x2a, 0x31, 0x3c));
     visuals.widgets.noninteractive.bg_stroke =
-        Stroke::new(1.0, Color32::from_rgb(0x2a, 0x31, 0x3c));
+        Stroke::new(1.0_f32, Color32::from_rgb(0x2a, 0x31, 0x3c));
     visuals.widgets.noninteractive.fg_stroke =
-        Stroke::new(1.0, Color32::from_rgb(0xe6, 0xed, 0xf3));
+        Stroke::new(1.0_f32, Color32::from_rgb(0xe6, 0xed, 0xf3));
     visuals.widgets.inactive.bg_fill = Color32::from_rgb(0x1f, 0x26, 0x30);
     visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(0x1a, 0x1f, 0x28);
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0x2a, 0x31, 0x3c));
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(0xe6, 0xed, 0xf3));
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(0x2a, 0x31, 0x3c));
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(0xe6, 0xed, 0xf3));
     visuals.widgets.inactive.corner_radius = CornerRadius::same(8);
     visuals.widgets.hovered.bg_fill = Color32::from_rgb(0x29, 0x32, 0x3f);
     visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(0x23, 0x2b, 0x36);
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0x3a, 0x44, 0x52));
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(0x3a, 0x44, 0x52));
     visuals.widgets.hovered.corner_radius = CornerRadius::same(8);
     visuals.widgets.active.bg_fill = Color32::from_rgb(0x4f, 0x7a, 0xef);
     visuals.widgets.active.weak_bg_fill = Color32::from_rgb(0x5b, 0x8c, 0xff);
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0x5b, 0x8c, 0xff));
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(0x5b, 0x8c, 0xff));
     visuals.widgets.active.corner_radius = CornerRadius::same(8);
     visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(0x5b, 0x8c, 0xff, 60);
-    visuals.selection.stroke = Stroke::new(1.0, Color32::from_rgb(0x5b, 0x8c, 0xff));
+    visuals.selection.stroke = Stroke::new(1.0_f32, Color32::from_rgb(0x5b, 0x8c, 0xff));
     visuals.hyperlink_color = Color32::from_rgb(0x5b, 0x8c, 0xff);
     visuals.override_text_color = Some(Color32::from_rgb(0xe6, 0xed, 0xf3));
     ctx.set_visuals(visuals);
