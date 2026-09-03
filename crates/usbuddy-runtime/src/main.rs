@@ -31,21 +31,21 @@ use usbuddy_core::{
     ram::{FitBand, RamDecision, RamEstimateInput, assess_fit, detect_memory},
 };
 
+// The web UI is a React SPA built by Vite into ui/web/dist with fixed
+// filenames (no content hashes) precisely so these embeds stay stable.
+// The built dist/ is committed, so a plain `cargo build` needs no npm.
+// After changing ui/web sources, run `npm --prefix ui/web run build`.
 const INDEX_HTML: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../ui/web/src/index.html"
+    "/../../ui/web/dist/index.html"
 ));
 const APP_JS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../ui/web/src/app.js"
+    "/../../ui/web/dist/assets/app.js"
 ));
 const STYLES_CSS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../ui/web/src/styles.css"
-));
-const MARKDOWN_JS: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../ui/web/src/markdown.js"
+    "/../../ui/web/dist/assets/styles.css"
 ));
 /// Embedded JPG icon, decoded at runtime into RGBA for both the tray and
 /// the in-browser favicon-ish PNG endpoint. Cross-platform: same bytes are
@@ -275,7 +275,6 @@ async fn serve_http(
     let app = Router::new()
         .route("/", get(index))
         .route("/assets/app.js", get(app_js))
-        .route("/assets/markdown.js", get(markdown_js))
         .route("/assets/styles.css", get(styles_css))
         .route("/assets/icon.png", get(icon_png))
         .route("/api/status", get(api_status))
@@ -416,16 +415,6 @@ async fn app_js() -> impl IntoResponse {
             "application/javascript; charset=utf-8",
         )],
         APP_JS,
-    )
-}
-
-async fn markdown_js() -> impl IntoResponse {
-    (
-        [(
-            header::CONTENT_TYPE,
-            "application/javascript; charset=utf-8",
-        )],
-        MARKDOWN_JS,
     )
 }
 

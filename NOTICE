@@ -16,3 +16,10 @@ model weights) at runtime rather than bundling them. Those components are
 covered by their own respective licenses, granted directly to the end user
 by their upstream providers. See docs/VERIFICATION.md and the signed
 artifact manifest for provenance details.
+
+The embedded web chat interface bundles the following open-source
+JavaScript libraries (all MIT licensed): React and React DOM (Meta
+Platforms, Inc.), Radix UI primitives (WorkOS), zustand (Poimandres),
+Lucide icons (Lucide Contributors), clsx (Luke Edwards), and
+tailwind-merge (Dany Castillo). Styling is generated with Tailwind CSS
+(MIT, Tailwind Labs Inc.).

@@ -21,7 +21,7 @@ Cargo workspace (`resolver = "2"`, edition 2024). Members:
 - `crates/usbuddy-installer-gui` — `eframe`/`egui` desktop app. Thin surface over core.
 - `crates/usbuddy-runtime` — localhost HTTP server (`axum`) that spawns/kills `llama-server`, reverse-proxies chat, serves the embedded SPA, and idle-unloads weights after 5 min.
 - `xtask` — maintainer tool. `catalog-fetch` regenerates `fixtures/catalog/official.catalog.json` from `seed.toml` by fetching SHA256+size from HF LFS pointers (never downloads model bytes).
-- `ui/web` — static SPA. Embedded into the runtime binary via `include_str!` at compile time; a plain `cargo build` already bundles it.
+- `ui/web` — React + TypeScript + Vite + Tailwind SPA (Radix primitives, zustand state). Built into `ui/web/dist/` with fixed filenames (no content hashes); the runtime embeds `dist/index.html`, `dist/assets/app.js`, `dist/assets/styles.css` via `include_str!` at compile time. **`dist/` is committed** so a plain `cargo build` still bundles it — after changing UI sources you must run `npm --prefix ui/web run build` and commit the regenerated `dist/`.
 
 When adding behavior, default to putting it in `usbuddy-core` and exposing it via all three installer surfaces + (where relevant) the runtime. Don't duplicate logic into the CLI/TUI/GUI crates.
 
@@ -43,11 +43,12 @@ npm --prefix ui/web run test
 cargo test -p usbuddy-core <test_name>
 cargo test -p usbuddy-installer-cli -- --nocapture <test_name>
 
-# Web UI (optional; only needed for lint / its own tests)
+# Web UI (needed for lint / tests / rebuilding the embedded bundle)
 npm --prefix ui/web install
-npm --prefix ui/web run lint
-npm --prefix ui/web run test
-npm --prefix ui/web run build
+npm --prefix ui/web run lint    # tsc --noEmit
+npm --prefix ui/web run test    # vitest
+npm --prefix ui/web run build   # regenerates ui/web/dist (commit it)
+npm --prefix ui/web run dev     # vite dev server, proxies /api to :8765
 
 # Maintainer: regenerate the curated catalog from seed.toml
 cargo run -p xtask -- catalog-fetch

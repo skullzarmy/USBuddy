@@ -97,9 +97,11 @@ cargo test --workspace
 ```
 
 Project conventions and workspace layout are in
-[CLAUDE.md](CLAUDE.md). The web UI under `ui/web/src/` is embedded into
-the runtime binary via `include_str!` — `cargo build` already bundles
-it.
+[CLAUDE.md](CLAUDE.md). The web UI under `ui/web/` is a React + Vite SPA
+whose built bundle (`ui/web/dist/`, committed) is embedded into the
+runtime binary via `include_str!` — `cargo build` already bundles it.
+After changing UI sources, run `npm --prefix ui/web run build` to
+regenerate the bundle.
 
 ## License
 
