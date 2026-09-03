@@ -11,7 +11,11 @@
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex, mpsc},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
     time::Instant,
 };
@@ -22,7 +26,10 @@ use semver::Version;
 use usbuddy_core::{
     catalog::{Catalog, ModelEntry, load_catalog},
     compiled_version,
-    download::{DownloadProgress, download_verified_with_progress},
+    download::{
+        DownloadControl, DownloadProgress, download_verified_with_progress,
+        download_verified_with_progress_controlled,
+    },
     engine::{
         AssetProgress, DEFAULT_LLAMA_TAG, DEFAULT_RUNTIME_RELEASE_BASE, EngineSelection,
         EngineStatus, EngineTarget, install_engines_with_asset_progress,
@@ -71,13 +78,15 @@ enum QueueStatus {
     Pending,
     Running,
     Done,
+    Canceled,
     Failed(String),
 }
 
 /// One model queued for download. The queue is shared between the UI thread
 /// (which reads it every frame to render bars) and the worker thread (which
 /// mutates `status` / `bytes_done` / `started` / `finished` as it works
-/// through items). All access goes through the parent `Mutex`.
+/// through items). All access goes through the parent `Mutex`, except the
+/// `cancel` flag which the download loop polls lock-free.
 #[derive(Debug, Clone)]
 struct QueueItem {
     id: u64,
@@ -91,6 +100,7 @@ struct QueueItem {
     status: QueueStatus,
     started: Option<Instant>,
     finished: Option<Instant>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl QueueItem {
@@ -146,6 +156,16 @@ impl QueueState {
         self.items.lock().unwrap().iter().cloned().collect()
     }
 
+    /// True while any item is pending or downloading — the UI must keep
+    /// repainting to show progress even without user input.
+    fn has_active_work(&self) -> bool {
+        self.items
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|i| matches!(i.status, QueueStatus::Pending | QueueStatus::Running))
+    }
+
     fn push(&self, item: QueueItem) {
         self.items.lock().unwrap().push_back(item);
         self.cv.notify_all();
@@ -164,11 +184,24 @@ impl QueueState {
         }
     }
 
+    /// Ask a running item's download loop to abort at the next chunk.
+    fn request_cancel(&self, id: u64) {
+        let items = self.items.lock().unwrap();
+        if let Some(it) = items
+            .iter()
+            .find(|i| i.id == id && matches!(i.status, QueueStatus::Running))
+        {
+            it.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
     fn clear_finished(&self) {
-        self.items
-            .lock()
-            .unwrap()
-            .retain(|i| !matches!(i.status, QueueStatus::Done | QueueStatus::Failed(_)));
+        self.items.lock().unwrap().retain(|i| {
+            !matches!(
+                i.status,
+                QueueStatus::Done | QueueStatus::Failed(_) | QueueStatus::Canceled
+            )
+        });
     }
 
     /// Take the next `Pending` item, marking it `Running` and stamping
@@ -210,6 +243,14 @@ impl QueueState {
             };
         }
     }
+
+    fn set_canceled(&self, id: u64) {
+        let mut items = self.items.lock().unwrap();
+        if let Some(it) = items.iter_mut().find(|i| i.id == id) {
+            it.finished = Some(Instant::now());
+            it.status = QueueStatus::Canceled;
+        }
+    }
 }
 
 /// Worker thread body: drains the queue serially. Sleeps on the condvar
@@ -232,7 +273,8 @@ fn queue_worker(state: Arc<QueueState>, log_tx: mpsc::Sender<Job>) {
         let _ = log_tx.send(Job::Log(format!("⏬ start: {}", item.label)));
         let state_for_cb = state.clone();
         let id = item.id;
-        let result = download_verified_with_progress(
+        let cancel = item.cancel.clone();
+        let result = download_verified_with_progress_controlled(
             &item.url,
             &item.dest,
             Some(&item.expected_sha256),
@@ -242,11 +284,22 @@ fn queue_worker(state: Arc<QueueState>, log_tx: mpsc::Sender<Job>) {
                   }| {
                 state_for_cb.update_progress(id, bytes_done, bytes_total);
             },
+            move || {
+                if cancel.load(Ordering::Relaxed) {
+                    DownloadControl::Cancel
+                } else {
+                    DownloadControl::Continue
+                }
+            },
         );
         match result {
             Ok(sha) => {
                 state.finish(item.id, Ok(()));
                 let _ = log_tx.send(Job::Log(format!("✓ {} (sha256={sha})", item.label)));
+            }
+            Err(usbuddy_core::error::UsbBuddyError::Canceled) => {
+                state.set_canceled(item.id);
+                let _ = log_tx.send(Job::Log(format!("✕ canceled: {}", item.label)));
             }
             Err(e) => {
                 let msg = e.to_string();
@@ -319,29 +372,29 @@ struct Readiness {
     drive_root: Option<PathBuf>,
 }
 
-/// Top-level navigation page. The whole UI is one page at a time — no
-/// more 5-section scroll-of-cards. Pages map to "what does the user
-/// actually want to do right now?".
+/// Top-level navigation page. The whole UI is one page at a time,
+/// ordered as wizard steps: Setup → Models → Launch. Later steps stay
+/// locked until their prerequisites are met.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
-    Home,   // launch + readiness summary
-    Setup,  // drive picker + engine provisioning
-    Models, // catalog + downloads
+    Home,   // step 3: launch + readiness summary
+    Setup,  // step 1: drive picker + engine provisioning
+    Models, // step 2: catalog + downloads
     Settings,
 }
 
 impl Page {
     fn label(self) -> &'static str {
         match self {
-            Self::Home => "Home",
-            Self::Setup => "Setup",
-            Self::Models => "Models",
+            Self::Home => "3 · Launch",
+            Self::Setup => "1 · Setup",
+            Self::Models => "2 · Models",
             Self::Settings => "Settings",
         }
     }
     fn icon(self) -> &'static str {
         match self {
-            Self::Home => "🏠",
+            Self::Home => "🚀",
             Self::Setup => "🔧",
             Self::Models => "📦",
             Self::Settings => "⚙",
@@ -428,6 +481,15 @@ impl App {
         me.refresh_layout();
         me.refresh_engine_status();
         me.try_load_drive_catalog_silent();
+        // Start on the first incomplete wizard step.
+        let r = me.readiness();
+        me.current_page = if !(r.drive_ok && r.engine_ok && r.runtime_ok) {
+            Page::Setup
+        } else if !r.models_ok {
+            Page::Models
+        } else {
+            Page::Home
+        };
         me
     }
 
@@ -714,6 +776,7 @@ impl App {
             status: QueueStatus::Pending,
             started: None,
             finished: None,
+            cancel: Arc::new(AtomicBool::new(false)),
         };
         self.log(format!("➕ queued: {}", item.label));
         self.queue.push(item);
@@ -723,7 +786,9 @@ impl App {
         if self.queue.remove_pending(id) {
             self.log(format!("✕ removed pending queue item #{id}"));
         } else {
-            self.log("[info] cannot cancel — item already downloading or finished");
+            // Running: ask the download loop to abort at the next chunk.
+            self.queue.request_cancel(id);
+            self.log(format!("✕ canceling download #{id}…"));
         }
     }
 
@@ -984,7 +1049,11 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_jobs();
-        if self.job_running {
+        // Immediate-mode gotcha: without an explicit repaint request, egui
+        // only redraws on user input — background downloads would appear
+        // frozen until the user scrolls. Keep frames coming while any
+        // blocking job OR queued download is in flight.
+        if self.job_running || self.queue.has_active_work() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(150));
         }
@@ -1047,11 +1116,12 @@ impl App {
                 });
                 ui.add_space(18.0);
 
-                // Nav buttons
-                self.nav_button(ui, Page::Home, Some(home_ready));
-                self.nav_button(ui, Page::Setup, Some(setup_done));
-                self.nav_button(ui, Page::Models, Some(models_done));
-                self.nav_button(ui, Page::Settings, None);
+                // Nav buttons in wizard order. Later steps unlock as their
+                // prerequisites complete.
+                self.nav_button(ui, Page::Setup, Some(setup_done), true);
+                self.nav_button(ui, Page::Models, Some(models_done), r.drive_ok);
+                self.nav_button(ui, Page::Home, Some(home_ready), setup_done);
+                self.nav_button(ui, Page::Settings, None, true);
 
                 // Footer at the bottom
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
@@ -1076,17 +1146,19 @@ impl App {
             });
     }
 
-    fn nav_button(&mut self, ui: &mut egui::Ui, page: Page, status: Option<bool>) {
+    fn nav_button(&mut self, ui: &mut egui::Ui, page: Page, status: Option<bool>, enabled: bool) {
         let selected = self.current_page == page;
         let height = 36.0;
-        let (rect, resp) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), height),
-            egui::Sense::click(),
-        );
+        let sense = if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        };
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), sense);
         let painter = ui.painter();
         let bg = if selected {
             egui::Color32::from_rgba_unmultiplied(0x2d, 0xa3, 0xf6, 38)
-        } else if resp.hovered() {
+        } else if enabled && resp.hovered() {
             egui::Color32::from_rgb(0x1c, 0x22, 0x2b)
         } else {
             egui::Color32::TRANSPARENT
@@ -1104,7 +1176,9 @@ impl App {
                 egui::Color32::from_rgb(0x2d, 0xa3, 0xf6),
             );
         }
-        let text_color = if selected {
+        let text_color = if !enabled {
+            egui::Color32::from_rgb(0x4a, 0x53, 0x60)
+        } else if selected {
             egui::Color32::from_rgb(0xe6, 0xed, 0xf3)
         } else {
             egui::Color32::from_rgb(0x9a, 0xa5, 0xb4)
@@ -1123,6 +1197,17 @@ impl App {
             egui::FontId::proportional(14.0),
             text_color,
         );
+        if !enabled {
+            painter.text(
+                rect.right_center() - egui::vec2(14.0, 0.0),
+                egui::Align2::CENTER_CENTER,
+                "🔒",
+                egui::FontId::proportional(12.0),
+                egui::Color32::from_rgb(0x4a, 0x53, 0x60),
+            );
+            resp.on_hover_text("Locked — complete the previous step first.");
+            return;
+        }
         if let Some(ok) = status {
             let color = if ok {
                 egui::Color32::from_rgb(0x4c, 0xaf, 0x50)
@@ -1321,6 +1406,9 @@ impl App {
                         ("Downloading", egui::Color32::from_rgb(0x2d, 0xa3, 0xf6))
                     }
                     QueueStatus::Done => ("Done", egui::Color32::from_rgb(0x4c, 0xaf, 0x50)),
+                    QueueStatus::Canceled => {
+                        ("Canceled", egui::Color32::from_rgb(0x9a, 0xa5, 0xb4))
+                    }
                     QueueStatus::Failed(_) => ("Failed", egui::Color32::from_rgb(0xe5, 0x73, 0x73)),
                 };
                 ui.horizontal(|ui| {
@@ -1329,7 +1417,7 @@ impl App {
                         egui::RichText::new(&item.label)
                             .color(egui::Color32::from_rgb(0xe6, 0xed, 0xf3)),
                     );
-                    if matches!(item.status, QueueStatus::Pending)
+                    if matches!(item.status, QueueStatus::Pending | QueueStatus::Running)
                         && ui.small_button("✕ cancel").clicked()
                     {
                         to_cancel = Some(item.id);
@@ -1345,6 +1433,9 @@ impl App {
                 ui.add(bar.desired_width(ui.available_width()));
                 let detail = match (&item.status, item.bytes_total) {
                     (QueueStatus::Failed(e), _) => e.clone(),
+                    (QueueStatus::Canceled, _) => {
+                        format!("canceled at {}", format_bytes(item.bytes_done))
+                    }
                     (QueueStatus::Done, Some(t)) => format!("✓ {}", format_bytes(t)),
                     (QueueStatus::Done, None) => format!("✓ {}", format_bytes(item.bytes_done)),
                     (_, Some(total)) => {
@@ -1910,17 +2001,18 @@ impl App {
                 })
                 .unwrap_or_default();
             // Snapshot the queue once per frame so we can tag each model
-            // row with its queue state without re-locking inside the loop.
-            let queued_files: Vec<(String, QueueStatus)> = self
+            // row with its live queue state (queued / downloading % / paused)
+            // without re-locking inside the loop.
+            let queued_items: Vec<QueueItem> = self
                 .queue
                 .snapshot()
                 .into_iter()
                 .filter(|i| matches!(i.status, QueueStatus::Pending | QueueStatus::Running))
-                .map(|i| (i.file_name, i.status))
                 .collect();
 
             let mut to_download: Option<ModelEntry> = None;
             let mut to_remove: Option<String> = None;
+            let mut to_cancel_queue: Option<u64> = None;
             let memory = self.memory;
 
             egui::Grid::new("models-grid")
@@ -1968,12 +2060,11 @@ impl App {
                         ui.colored_label(color, txt);
 
                         let installed = installed_files.contains(&model.file_name);
-                        // Reflect queue state in the row so the user knows
-                        // a model is already in flight without having to
-                        // scroll up to the queue panel.
-                        let in_queue = queued_files
-                            .iter()
-                            .any(|(name, _)| name == &model.file_name);
+                        // Reflect live queue state in the row so the user
+                        // sees progress without scrolling up to the queue
+                        // panel.
+                        let queue_entry =
+                            queued_items.iter().find(|i| i.file_name == model.file_name);
                         ui.horizontal(|ui| {
                             if installed {
                                 ui.colored_label(
@@ -1983,15 +2074,34 @@ impl App {
                                 if ui.small_button("Remove").clicked() {
                                     to_remove = Some(model.file_name.clone());
                                 }
-                            } else if in_queue {
-                                ui.colored_label(
-                                    egui::Color32::from_rgb(0x2d, 0xa3, 0xf6),
-                                    "In queue",
-                                );
+                            } else if let Some(q) = queue_entry {
+                                let (txt, color) = match &q.status {
+                                    QueueStatus::Pending => (
+                                        "Queued".to_string(),
+                                        egui::Color32::from_rgb(0x9a, 0xa5, 0xb4),
+                                    ),
+                                    QueueStatus::Running => (
+                                        match q.percent() {
+                                            Some(p) => {
+                                                format!("Downloading {:.0}%", p * 100.0)
+                                            }
+                                            None => "Downloading…".to_string(),
+                                        },
+                                        egui::Color32::from_rgb(0x2d, 0xa3, 0xf6),
+                                    ),
+                                    _ => unreachable!("filtered to Pending | Running above"),
+                                };
+                                ui.colored_label(color, txt);
+                                if ui.small_button("✕").on_hover_text("Cancel").clicked() {
+                                    to_cancel_queue = Some(q.id);
+                                }
                             } else {
                                 let enabled = self.layout().is_some();
                                 if ui
                                     .add_enabled(enabled, egui::Button::new("⬇ Queue download"))
+                                    .on_disabled_hover_text(
+                                        "Set the drive path above first (e.g. /Volumes/USBUDDY).",
+                                    )
                                     .clicked()
                                 {
                                     to_download = Some(model.clone());
@@ -2007,6 +2117,9 @@ impl App {
             }
             if let Some(file_name) = to_remove {
                 self.action_remove(&file_name);
+            }
+            if let Some(id) = to_cancel_queue {
+                self.action_cancel_queue_item(id);
             }
         });
     }

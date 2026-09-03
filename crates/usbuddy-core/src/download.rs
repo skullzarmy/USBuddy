@@ -19,6 +19,14 @@ pub struct DownloadProgress {
     pub bytes_total: Option<u64>,
 }
 
+/// Caller decision polled between chunks by
+/// [`download_verified_with_progress_controlled`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadControl {
+    Continue,
+    Cancel,
+}
+
 /// Download `url` to `dest`, streaming the body through a SHA256 hasher.
 /// After a successful download the computed hex digest is returned.
 /// If `expected_sha256` is supplied the download is rejected if it does not match.
@@ -43,7 +51,23 @@ pub fn download_verified_with_progress(
     url: &str,
     dest: &Path,
     expected_sha256: Option<&str>,
+    progress: impl FnMut(DownloadProgress),
+) -> Result<String> {
+    download_verified_with_progress_controlled(url, dest, expected_sha256, progress, || {
+        DownloadControl::Continue
+    })
+}
+
+/// Same as [`download_verified_with_progress`] but also polls `control`
+/// between chunks so the caller can cancel mid-flight. On
+/// [`DownloadControl::Cancel`] the partial temp file is discarded and
+/// [`UsbBuddyError::Canceled`] is returned; nothing is written to `dest`.
+pub fn download_verified_with_progress_controlled(
+    url: &str,
+    dest: &Path,
+    expected_sha256: Option<&str>,
     mut progress: impl FnMut(DownloadProgress),
+    mut control: impl FnMut() -> DownloadControl,
 ) -> Result<String> {
     let client = Client::builder()
         .user_agent(concat!("usbuddy/", env!("CARGO_PKG_VERSION")))
@@ -80,6 +104,10 @@ pub fn download_verified_with_progress(
 
     loop {
         use std::io::Read;
+        match control() {
+            DownloadControl::Continue => {}
+            DownloadControl::Cancel => return Err(UsbBuddyError::Canceled),
+        }
         let n = response
             .read(&mut buf)
             .map_err(|e| UsbBuddyError::Network(e.to_string()))?;

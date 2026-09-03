@@ -18,6 +18,8 @@ pub enum UsbBuddyError {
     HashMismatch { expected: String, actual: String },
     #[error("network error: {0}")]
     Network(String),
+    #[error("download canceled")]
+    Canceled,
     #[error(transparent)]
     Io(#[from] io::Error),
     #[error(transparent)]
