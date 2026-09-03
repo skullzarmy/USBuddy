@@ -353,6 +353,70 @@ impl DriveLayout {
         Ok(next)
     }
 
+    /// Update the drive to `new_version` using a locally-built runtime binary.
+    ///
+    /// Clones the active version tree (so per-version engine binaries and any
+    /// other assets travel with the update), installs `runtime_binary` under
+    /// `bin/{host_bin_dir}/`, then activates the new version. Yank-safe per
+    /// the update invariant: staged in `versions/{new}.tmp`, finalized by
+    /// atomic rename + atomic `current.json` rewrite. The old version dir is
+    /// left on disk so `rollback` works.
+    pub fn update_to_local_runtime(
+        &self,
+        new_version: &str,
+        runtime_binary: &Path,
+        host_bin_dir: &str,
+    ) -> Result<CurrentVersionPointer> {
+        let current = self.read_current()?;
+        if current.active == new_version {
+            return Err(UsbBuddyError::InvalidState(format!(
+                "drive is already on version {new_version}"
+            )));
+        }
+        if !runtime_binary.exists() {
+            return Err(UsbBuddyError::MissingPath(runtime_binary.to_path_buf()));
+        }
+        let bin_name = runtime_binary
+            .file_name()
+            .ok_or_else(|| UsbBuddyError::InvalidState("runtime binary has no file name".into()))?;
+
+        let staging = self.versions_dir().join(format!("{new_version}.tmp"));
+        if staging.exists() {
+            fs::remove_dir_all(&staging)?;
+        }
+        copy_dir_recursive(&self.version_dir(&current.active), &staging)?;
+
+        let dest_dir = staging.join("bin").join(host_bin_dir);
+        fs::create_dir_all(&dest_dir)?;
+        let dest = dest_dir.join(bin_name);
+        fs::copy(runtime_binary, &dest)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = fs::metadata(&dest) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o755);
+                let _ = fs::set_permissions(&dest, perms);
+            }
+        }
+
+        let new_dir = self.version_dir(new_version);
+        if new_dir.exists() {
+            // Stale partial from an earlier attempt — the staged tree replaces it.
+            fs::remove_dir_all(&new_dir)?;
+        }
+        fs::rename(&staging, &new_dir)?;
+
+        let next = CurrentVersionPointer {
+            schema: CURRENT_SCHEMA_V1,
+            active: new_version.into(),
+            previous: Some(current.active),
+        };
+        self.write_current(&next)?;
+        self.write_launchers()?;
+        Ok(next)
+    }
+
     pub fn discover_drop_in_models(&self) -> Result<Vec<DropInModel>> {
         if !self.models_dir().exists() {
             return Ok(Vec::new());
@@ -393,6 +457,35 @@ impl DriveLayout {
     }
 }
 
+/// Recursive dir copy used when staging a version update. Skips macOS
+/// AppleDouble sidecars that exFAT accumulates.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    if !src.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with("._") || name_str == ".DS_Store" {
+            continue;
+        }
+        let from = entry.path();
+        let to = dst.join(&name);
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)?;
+            #[cfg(unix)]
+            if let Ok(meta) = fs::metadata(&from) {
+                let _ = fs::set_permissions(&to, meta.permissions());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -412,6 +505,48 @@ mod tests {
         let rolled = layout.rollback().unwrap();
         assert_eq!(rolled.active, "0.0.9");
         assert_eq!(rolled.previous.as_deref(), Some("0.1.0"));
+    }
+
+    #[test]
+    fn update_to_local_runtime_clones_tree_and_flips_pointer() {
+        let dir = tempdir().unwrap();
+        let layout = DriveLayout::new(dir.path());
+        layout.initialize_structure("0.1.0").unwrap();
+
+        // Simulate a per-version engine binary that must travel with updates.
+        let engine_dir = layout.version_dir("0.1.0").join("bin").join("macos-x64");
+        std::fs::create_dir_all(&engine_dir).unwrap();
+        std::fs::write(engine_dir.join("llama-server"), b"engine-bytes").unwrap();
+
+        // A "locally built" runtime binary somewhere off-drive.
+        let runtime_src = dir.path().join("usbuddy-runtime");
+        std::fs::write(&runtime_src, b"runtime-bytes").unwrap();
+
+        let next = layout
+            .update_to_local_runtime("0.1.1", &runtime_src, "macos-x64")
+            .unwrap();
+        assert_eq!(next.active, "0.1.1");
+        assert_eq!(next.previous.as_deref(), Some("0.1.0"));
+
+        let new_bin = layout.version_dir("0.1.1").join("bin").join("macos-x64");
+        assert_eq!(
+            std::fs::read(new_bin.join("llama-server")).unwrap(),
+            b"engine-bytes",
+            "engine must be cloned into the new version"
+        );
+        assert_eq!(
+            std::fs::read(new_bin.join("usbuddy-runtime")).unwrap(),
+            b"runtime-bytes"
+        );
+        // Old version stays for rollback; staging dir is gone.
+        assert!(layout.version_dir("0.1.0").exists());
+        assert!(!layout.versions_dir().join("0.1.1.tmp").exists());
+        // Same-version "update" is rejected.
+        assert!(
+            layout
+                .update_to_local_runtime("0.1.1", &runtime_src, "macos-x64")
+                .is_err()
+        );
     }
 
     #[test]

@@ -453,7 +453,7 @@ impl App {
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default(),
-            init_version: "0.1.0".into(),
+            init_version: compiled_version().into(),
             catalog_url: DEFAULT_CATALOG_URL.into(),
             license_scope: LicenseScope::PermissiveOnly,
             layout_cache: None,
@@ -915,6 +915,7 @@ impl App {
             "aarch64" => "arm64".to_string(),
             other => other.to_string(),
         };
+        let host_bin_dir = format!("{}-{arch}", platform.os);
         let bin_name = if platform.os == "windows" {
             "usbuddy-runtime.exe"
         } else {
@@ -934,10 +935,31 @@ impl App {
             ));
             return;
         }
+
+        // Version-aware install: a newer installer stages a NEW shadow-tree
+        // version (cloning engines from the active one) and atomically flips
+        // current.json — never mutating the running version in place.
+        let new_version = compiled_version();
+        if current.active != new_version {
+            match layout.update_to_local_runtime(new_version, &source, &host_bin_dir) {
+                Ok(next) => {
+                    self.log(format!(
+                        "⬆ Updated drive {} → {} (previous kept for rollback)",
+                        next.previous.as_deref().unwrap_or("?"),
+                        next.active
+                    ));
+                    self.refresh_engine_status();
+                }
+                Err(error) => self.log(format!("[error] version update: {error}")),
+            }
+            return;
+        }
+
+        // Same version — dev-loop refresh of the active tree in place.
         let dest_dir = layout
             .version_dir(&current.active)
             .join("bin")
-            .join(format!("{}-{arch}", platform.os));
+            .join(&host_bin_dir);
         if let Err(error) = std::fs::create_dir_all(&dest_dir) {
             self.log(format!("[error] create {}: {error}", dest_dir.display()));
             return;
@@ -1315,10 +1337,82 @@ impl App {
     }
 
     fn render_page_setup(&mut self, ui: &mut egui::Ui) {
+        self.render_update_banner(ui);
         self.render_drive_card(ui);
         ui.add_space(14.0);
         self.render_engine_progress_card(ui);
         self.render_engine_card(ui);
+    }
+
+    /// Some((active, newer)) when the drive's active version is older than
+    /// this installer's compiled version.
+    fn drive_update_available(&self) -> Option<(String, String)> {
+        let current = self.layout()?.read_current().ok()?;
+        let active = Version::parse(&current.active).ok()?;
+        let ours = Version::parse(compiled_version()).ok()?;
+        (ours > active).then(|| (current.active, compiled_version().to_string()))
+    }
+
+    /// Yellow callout when the stick is behind this installer. One click
+    /// stages the new version and flips current.json atomically.
+    fn render_update_banner(&mut self, ui: &mut egui::Ui) {
+        let Some((active, newer)) = self.drive_update_available() else {
+            return;
+        };
+        egui::Frame::new()
+            .fill(egui::Color32::from_rgb(0x2a, 0x24, 0x12))
+            .stroke(egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgb(0xff, 0xd2, 0x3f),
+            ))
+            .corner_radius(egui::CornerRadius::same(10))
+            .inner_margin(egui::Margin::same(14))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("⬆")
+                            .size(18.0)
+                            .color(egui::Color32::from_rgb(0xff, 0xd2, 0x3f)),
+                    );
+                    // Cap the text column so it wraps instead of running
+                    // under the right-aligned button.
+                    let text_width = (ui.available_width() - 200.0).max(200.0);
+                    ui.vertical(|ui| {
+                        ui.set_max_width(text_width);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Update available: drive is on {active}, this installer ships {newer}"
+                            ))
+                            .strong()
+                            .color(egui::Color32::from_rgb(0xe6, 0xed, 0xf3)),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                "Stages the new version next to the old one and switches over \
+                                 atomically — the previous version stays available for rollback.",
+                            )
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(0x9a, 0xa5, 0xb4)),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(
+                                !self.job_running,
+                                egui::Button::new(
+                                    egui::RichText::new(format!("Update drive to {newer}"))
+                                        .color(egui::Color32::BLACK),
+                                )
+                                .fill(egui::Color32::from_rgb(0xff, 0xd2, 0x3f)),
+                            )
+                            .clicked()
+                        {
+                            self.action_install_runtime_host();
+                        }
+                    });
+                });
+            });
+        ui.add_space(14.0);
     }
 
     fn render_page_models(&mut self, ui: &mut egui::Ui) {
@@ -1625,7 +1719,7 @@ impl App {
                             && ui
                                 .add(
                                     egui::Button::new(
-                                        egui::RichText::new("📂  Reveal launcher in file manager")
+                                        egui::RichText::new("Reveal launcher in file manager")
                                             .size(14.0)
                                             .color(egui::Color32::WHITE),
                                     )
@@ -1899,7 +1993,9 @@ impl App {
                         .hint_text("/Volumes/USBUDDY or /tmp/usbuddy-dev")
                         .desired_width(420.0),
                 );
-                if ui.button("📂 Browse…").clicked() {
+                // Plain label: the bundled DejaVu font has no glyph for the
+                // folder emoji, which renders as visual garbage.
+                if ui.button("Browse…").clicked() {
                     self.pick_drive();
                 }
             });

@@ -611,10 +611,30 @@ fn main() -> anyhow::Result<()> {
                     source.display()
                 );
             }
+            let host_bin_dir = format!("{}-{arch}", platform.os);
+
+            // A newer installer stages a NEW shadow-tree version (cloning
+            // engines from the active one) and flips current.json atomically,
+            // keeping the old version for rollback. Same version = in-place
+            // dev refresh.
+            let new_version = compiled_version();
+            if current.active != new_version {
+                let next = layout
+                    .update_to_local_runtime(new_version, &source, &host_bin_dir)
+                    .with_context(|| format!("failed to update drive to version {new_version}"))?;
+                eprintln!(
+                    "⬆ Updated drive {} → {} (previous kept for rollback)",
+                    next.previous.as_deref().unwrap_or("?"),
+                    next.active
+                );
+                print_json(&next)?;
+                return Ok(());
+            }
+
             let dest_dir = layout
                 .version_dir(&current.active)
                 .join("bin")
-                .join(format!("{}-{arch}", platform.os));
+                .join(&host_bin_dir);
             fs::create_dir_all(&dest_dir)?;
             let dest = dest_dir.join(bin_name);
             fs::copy(&source, &dest)?;
@@ -632,9 +652,7 @@ fn main() -> anyhow::Result<()> {
             layout.write_launchers().with_context(|| {
                 format!("failed to write launchers to {}", layout.root().display())
             })?;
-            print_json(
-                &serde_json::json!({ "runtime": dest, "platform": format!("{}-{arch}", platform.os) }),
-            )?;
+            print_json(&serde_json::json!({ "runtime": dest, "platform": host_bin_dir }))?;
         }
     }
     Ok(())

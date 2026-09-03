@@ -331,10 +331,19 @@ fn load_state(drive: PathBuf, idle_timeout_secs: u64) -> anyhow::Result<RuntimeS
 
 fn status_payload(state: &RuntimeState, message: &str) -> RuntimeStatus {
     let current = state.layout.read_current().ok();
-    let catalog_models = state
+    // The stick UI is a launcher, not a storefront: only catalog models whose
+    // GGUF is actually present in models/ are offered. The full catalog lives
+    // in the installer.
+    let catalog_models: Vec<ModelEntry> = state
         .catalog
         .as_ref()
-        .map(|c| c.models.clone())
+        .map(|c| {
+            c.models
+                .iter()
+                .filter(|m| state.layout.models_dir().join(&m.file_name).exists())
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default();
     let advisories = state
         .catalog
@@ -348,19 +357,28 @@ fn status_payload(state: &RuntimeState, message: &str) -> RuntimeStatus {
         .map(|g| g.is_some())
         .unwrap_or(false);
 
-    // Catalog models that have already been downloaded get a real arch_meta
-    // probe (so the UI can show actual KV-per-token instead of a fixed
-    // constant); undownloaded entries return None and the UI falls back to a
-    // conservative heuristic.
+    // All listed models are on disk, so each gets a real arch_meta probe
+    // (actual KV-per-token); non-GGUF parse failures return None and the UI
+    // falls back to a conservative heuristic.
     let catalog_arch_meta: Vec<Option<ArchMeta>> = catalog_models
         .iter()
-        .map(|m| {
-            let path = state.layout.models_dir().join(&m.file_name);
-            if path.exists() {
-                usbuddy_core::gguf::read_arch_meta(&path)
-            } else {
-                None
-            }
+        .map(|m| usbuddy_core::gguf::read_arch_meta(&state.layout.models_dir().join(&m.file_name)))
+        .collect();
+
+    // Drop-ins are .gguf files WITHOUT a catalog entry — don't list a
+    // downloaded catalog model twice.
+    let catalog_files: Vec<&String> = catalog_models.iter().map(|m| &m.file_name).collect();
+    let drop_in_models: Vec<DropInModel> = state
+        .layout
+        .discover_drop_in_models()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|d| {
+            d.path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| !catalog_files.iter().any(|f| f.as_str() == n))
+                .unwrap_or(true)
         })
         .collect();
 
@@ -370,7 +388,7 @@ fn status_payload(state: &RuntimeState, message: &str) -> RuntimeStatus {
         platform: detect_platform(),
         current,
         models: catalog_models.clone(),
-        drop_in_models: state.layout.discover_drop_in_models().unwrap_or_default(),
+        drop_in_models,
         advisories,
         ram: memory,
         ram_previews: catalog_models
@@ -988,8 +1006,9 @@ struct RuntimeStatus {
     advisories: Vec<Advisory>,
     ram: usbuddy_core::ram::MemorySnapshot,
     ram_previews: Vec<RamDecision>,
-    /// Parallel to `models` — Some(meta) when the model is on disk and we
-    /// could parse its GGUF header, None when undownloaded or non-GGUF.
+    /// Parallel to `models` — Some(meta) when we could parse the GGUF
+    /// header, None on parse failure (UI falls back to a conservative
+    /// KV heuristic). All listed models are present on disk.
     catalog_arch_meta: Vec<Option<ArchMeta>>,
     llama_running: bool,
     llama_port: u16,

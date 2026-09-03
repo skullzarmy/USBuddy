@@ -5522,7 +5522,7 @@ checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
 name = "usbuddy-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "flate2",
  "reqwest",
@@ -5541,7 +5541,7 @@ dependencies = [
 
 [[package]]
 name = "usbuddy-installer-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -5556,7 +5556,7 @@ dependencies = [
 
 [[package]]
 name = "usbuddy-installer-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -5572,7 +5572,7 @@ dependencies = [
 
 [[package]]
 name = "usbuddy-installer-tui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -5587,7 +5587,7 @@ dependencies = [
 
 [[package]]
 name = "usbuddy-runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -6825,7 +6825,7 @@ checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
