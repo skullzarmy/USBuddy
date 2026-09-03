@@ -50,6 +50,8 @@ interface AppStore {
     llamaRunning: boolean;
     launching: boolean;
     launchStatus: string;
+    /// RAM band of the most recent successful launch, for the status dot.
+    launchBand: "green" | "yellow" | "red" | null;
     sidebarOpen: boolean;
     shutdownMessage: string | null;
 
@@ -220,6 +222,7 @@ export const useAppStore = create<AppStore>((set, get) => {
         llamaRunning: false,
         launching: false,
         launchStatus: "",
+        launchBand: null,
         sidebarOpen: true,
         shutdownMessage: null,
         messages: [],
@@ -267,27 +270,29 @@ export const useAppStore = create<AppStore>((set, get) => {
             const { selectedModelId, models, contextTokens } = get();
             if (!selectedModelId) return;
             const model = models.find((m) => m.id === selectedModelId);
-            set({ launching: true, launchStatus: "Starting model…" });
+            set({ launching: true, launchStatus: "Starting model…", launchBand: null });
             const result = await launchModel({
                 model_id: selectedModelId,
                 model_size_bytes: model?.sizeBytes || undefined,
                 context_tokens: contextTokens,
             }).catch((err: Error) => ({ ok: false, error: err.message }) as const);
             if (result.ok) {
+                const band = "ram_band" in result ? (result.ram_band ?? null) : null;
                 set({
                     launching: false,
-                    launchStatus: `Running (RAM: ${"ram_band" in result ? result.ram_band : "?"})`,
+                    launchStatus: "Model running",
+                    launchBand: band === "green" || band === "yellow" || band === "red" ? band : null,
                     llamaRunning: true,
                 });
             } else {
-                set({ launching: false, launchStatus: `Error: ${result.error}` });
+                set({ launching: false, launchStatus: `Error: ${result.error}`, launchBand: null });
             }
         },
 
         stop: async () => {
             if (inflight) inflight.abort();
             await stopModel();
-            set({ llamaRunning: false, launchStatus: "Model stopped." });
+            set({ llamaRunning: false, launchStatus: "Model stopped.", launchBand: null });
         },
 
         send: async (text) => {

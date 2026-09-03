@@ -21,6 +21,7 @@ export function Sidebar() {
     const llamaRunning = useAppStore((s) => s.llamaRunning);
     const launching = useAppStore((s) => s.launching);
     const launchStatus = useAppStore((s) => s.launchStatus);
+    const launchBand = useAppStore((s) => s.launchBand);
     const savedChats = useAppStore((s) => s.savedChats);
     const currentChatId = useAppStore((s) => s.currentChatId);
     const selectModel = useAppStore((s) => s.selectModel);
@@ -143,7 +144,28 @@ export function Sidebar() {
                         <Play className="h-4 w-4" /> {launching ? "Starting…" : "Launch model"}
                     </Button>
                 )}
-                {launchStatus && <p className="text-xs text-dim">{launchStatus}</p>}
+                {launchStatus && (
+                    <p className="flex items-center gap-1.5 text-xs text-dim">
+                        {launchBand && (
+                            <span
+                                aria-hidden
+                                className={`inline-block h-2 w-2 rounded-full ${
+                                    launchBand === "green"
+                                        ? "bg-ok"
+                                        : launchBand === "yellow"
+                                          ? "bg-warn"
+                                          : "bg-danger"
+                                }`}
+                            />
+                        )}
+                        <span>
+                            {launchStatus}
+                            {launchBand === "green" && " — comfortable RAM headroom"}
+                            {launchBand === "yellow" && " — tight RAM fit"}
+                            {launchBand === "red" && " — RAM critically low"}
+                        </span>
+                    </p>
+                )}
             </div>
 
             {/* advisories */}
