@@ -127,6 +127,12 @@ jobs:
               uses: taiki-e/install-action@v2
               with:
                   tool: cross
+            - name: Enable arm64 binfmt for cross image build
+              if: matrix.setup == 'cross'
+              # The GTK dev packages pull in arm64 binaries whose postinst
+              # scripts must execute during the cross image build — qemu
+              # binfmt lets the x86_64 runner run them.
+              run: docker run --privileged --rm tonistiigi/binfmt --install arm64
             - uses: actions/setup-node@v4
               if: matrix.build_full
               with:
