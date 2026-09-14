@@ -1,9 +1,10 @@
-import { Play, Power, Square, Trash2, Usb } from "lucide-react";
+import { Play, Plug, Power, Square, Trash2, Usb } from "lucide-react";
 import { useAppStore, selectedModel } from "../store";
 import { gib } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Slider } from "./ui/slider";
+import { Switch } from "./ui/switch";
 import { confirmDialog } from "./ui/confirm-dialog";
 import { RamBadge } from "./RamBadge";
 
@@ -31,6 +32,9 @@ export function Sidebar() {
     const loadChat = useAppStore((s) => s.loadChat);
     const deleteChat = useAppStore((s) => s.deleteChat);
     const quit = useAppStore((s) => s.quit);
+    const bridge = useAppStore((s) => s.bridge);
+    const setBridgeEnabled = useAppStore((s) => s.setBridgeEnabled);
+    const setBridgePanelOpen = useAppStore((s) => s.setBridgePanelOpen);
     const model = useAppStore(selectedModel);
 
     // Cap the slider to the model's trained context length when known;
@@ -46,6 +50,25 @@ export function Sidebar() {
             confirmVariant: "danger",
         });
         if (ok) await deleteChat(id);
+    };
+
+    const onToggleBridge = async (next: boolean) => {
+        if (next) {
+            const ok = await confirmDialog({
+                title: "Expose USBuddy to other programs on this computer?",
+                description: (
+                    <>
+                        Any program running on this machine that has the bridge token can use this model. The endpoint
+                        stays on <code className="font-mono">127.0.0.1</code> — nothing is reachable from the network
+                        and nothing is sent anywhere. Turn it off when you are done.
+                    </>
+                ),
+                confirmLabel: "Enable bridge",
+            });
+            if (!ok) return;
+        }
+        await setBridgeEnabled(next);
+        if (next) setBridgePanelOpen(true);
     };
 
     const onQuit = async () => {
@@ -167,6 +190,35 @@ export function Sidebar() {
                     </p>
                 )}
             </div>
+
+            {/* editor bridge */}
+            {bridge && (
+                <div className="flex flex-col gap-2">
+                    <SectionLabel>Developer bridge</SectionLabel>
+                    <label
+                        htmlFor="bridge-switch"
+                        className="flex cursor-pointer items-center gap-2 rounded-lg text-xs text-dim"
+                    >
+                        <Plug className={`h-4 w-4 shrink-0 ${bridge.enabled ? "text-accent" : ""}`} />
+                        <span className="flex-1">{bridge.enabled ? "Serving editors" : "Off"}</span>
+                        <Switch
+                            id="bridge-switch"
+                            checked={bridge.enabled}
+                            onCheckedChange={(v) => void onToggleBridge(v)}
+                        />
+                    </label>
+                    {bridge.enabled ? (
+                        <Button variant="outline" size="sm" onClick={() => setBridgePanelOpen(true)}>
+                            Setup &amp; token
+                        </Button>
+                    ) : (
+                        <p className="text-[11px] text-mute">
+                            Use this model from VS Code, Zed, Continue, or Cline over a local OpenAI-compatible
+                            endpoint.
+                        </p>
+                    )}
+                </div>
+            )}
 
             {/* advisories */}
             {status && status.advisories.length > 0 && (

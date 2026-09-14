@@ -4,6 +4,7 @@ import { Header } from "./components/Header";
 import { Sidebar } from "./components/Sidebar";
 import { MessageList } from "./components/MessageList";
 import { ChatInput } from "./components/ChatInput";
+import { BridgePanel } from "./components/BridgePanel";
 import { ConfirmDialogHost } from "./components/ui/confirm-dialog";
 import { TooltipProvider } from "./components/ui/tooltip";
 
@@ -39,6 +40,7 @@ export default function App() {
                     <ChatInput />
                 </main>
             </div>
+            <BridgePanel />
             <ConfirmDialogHost />
         </TooltipProvider>
     );

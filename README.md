@@ -8,6 +8,7 @@
 
 [Architecture](docs/ARCHITECTURE.md) ·
 [Catalog spec](docs/CATALOG-SPEC.md) ·
+[Editor integration](docs/EDITOR-INTEGRATION.md) ·
 [Footprint](docs/FOOTPRINT.md) ·
 [Verification](docs/VERIFICATION.md)
 
@@ -81,6 +82,20 @@ are in [docs/CATALOG-SPEC.md](docs/CATALOG-SPEC.md).
 The RAM-fit advisor reads each model's actual KV-cache shape from its
 GGUF header and refuses to load anything that would spill to disk —
 the #1 way local LLMs leak weights to the host.
+
+## Use it from your editor
+
+Turn on **Developer bridge** in the chat UI sidebar and the runtime
+serves an OpenAI-compatible `/v1` endpoint on loopback. Point Continue,
+Cline, Roo Code, Zed, or VS Code's BYOK provider at it and your coding
+assistant thinks with the model on the stick — nothing leaves the host.
+
+Off by default, bearer-token gated, `127.0.0.1` only, and it starts or
+swaps models on demand under the same RAM-fit gate as the chat UI.
+Cursor's base-URL override is the one thing that cannot work (it routes
+through Cursor's servers) — run an extension inside Cursor instead.
+Setup per editor, plus the autocomplete and VS Code extension plans, is
+in [docs/EDITOR-INTEGRATION.md](docs/EDITOR-INTEGRATION.md).
 
 ## Status
 

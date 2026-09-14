@@ -1,9 +1,11 @@
 import { create } from "zustand";
 import {
+    type BridgeInfo,
     type ChatMessage,
     type ChatSummary,
     type RuntimeStatus,
     deleteChatApi,
+    fetchBridge,
     fetchChat,
     fetchChats,
     fetchPrefs,
@@ -11,8 +13,10 @@ import {
     generateChatTitle,
     launchModel,
     newUuid,
+    putBridge,
     putChat,
     putPrefs,
+    rotateBridgeToken,
     shutdown,
     stopModel,
     streamChatCompletion,
@@ -64,6 +68,11 @@ interface AppStore {
     savedChats: ChatSummary[];
     currentChatId: string | null;
 
+    // --- editor bridge ---
+    /// null until /api/bridge has answered (or if it never does).
+    bridge: BridgeInfo | null;
+    bridgePanelOpen: boolean;
+
     // --- actions ---
     boot: () => Promise<void>;
     selectModel: (id: string) => void;
@@ -77,6 +86,10 @@ interface AppStore {
     loadChat: (id: string) => Promise<void>;
     deleteChat: (id: string) => Promise<void>;
     setSaveChats: (save: boolean) => Promise<void>;
+    setBridgeEnabled: (enabled: boolean) => Promise<void>;
+    setBridgeCtxTokens: (tokens: number) => Promise<void>;
+    rotateBridgeKey: () => Promise<void>;
+    setBridgePanelOpen: (open: boolean) => void;
     quit: (eject: boolean) => Promise<void>;
 }
 
@@ -230,10 +243,17 @@ export const useAppStore = create<AppStore>((set, get) => {
         saveChats: false,
         savedChats: [],
         currentChatId: null,
+        bridge: null,
+        bridgePanelOpen: false,
 
         boot: async () => {
             try {
-                const [status, prefs, chats] = await Promise.all([fetchStatus(), fetchPrefs(), fetchChats()]);
+                const [status, prefs, chats, bridge] = await Promise.all([
+                    fetchStatus(),
+                    fetchPrefs(),
+                    fetchChats(),
+                    fetchBridge(),
+                ]);
                 const models = buildModels(status);
                 const { selectedModelId } = get();
                 const selected =
@@ -248,6 +268,7 @@ export const useAppStore = create<AppStore>((set, get) => {
                     llamaRunning: status.llama_running,
                     saveChats: !!prefs.save_chats,
                     savedChats: chats,
+                    bridge,
                 });
             } catch (err) {
                 set({ statusLine: `Runtime API unavailable: ${(err as Error).message}` });
@@ -365,6 +386,29 @@ export const useAppStore = create<AppStore>((set, get) => {
                 set({ savedChats: await fetchChats() });
             }
         },
+
+        setBridgeEnabled: async (enabled) => {
+            // Optimistic so the switch doesn't lag behind the click; the
+            // server's answer (which carries the freshly minted token) wins.
+            const current = get().bridge;
+            if (current) set({ bridge: { ...current, enabled } });
+            const updated = await putBridge({ bridge_enabled: enabled });
+            if (updated) set({ bridge: updated });
+        },
+
+        setBridgeCtxTokens: async (tokens) => {
+            const current = get().bridge;
+            if (current) set({ bridge: { ...current, ctx_tokens: tokens } });
+            const updated = await putBridge({ bridge_ctx_tokens: tokens });
+            if (updated) set({ bridge: updated });
+        },
+
+        rotateBridgeKey: async () => {
+            const updated = await rotateBridgeToken();
+            if (updated) set({ bridge: updated });
+        },
+
+        setBridgePanelOpen: (open) => set({ bridgePanelOpen: open }),
 
         quit: async (eject) => {
             if (inflight) inflight.abort();

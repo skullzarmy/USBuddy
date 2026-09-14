@@ -237,6 +237,13 @@ impl DriveLayout {
         self.usbuddy_dir().join("runtime-prefs.toml")
     }
 
+    /// Bearer token for the editor bridge. Plain text on purpose, matching
+    /// `hf-token` and `license-prefs.toml`: the `.usbuddy/` data dir is
+    /// deliberately greppable so a user can audit what the stick knows.
+    pub fn bridge_token_path(&self) -> PathBuf {
+        self.usbuddy_dir().join("bridge-token")
+    }
+
     pub fn chats_dir(&self) -> PathBuf {
         self.usbuddy_dir().join("chats")
     }

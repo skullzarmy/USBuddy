@@ -13,8 +13,9 @@ use anyhow::Context;
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Request, State},
     http::{HeaderMap, Method, StatusCode, Uri, header},
+    middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
@@ -23,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use usbuddy_core::{
+    bridge,
     catalog::{Advisory, Catalog, ModelEntry, load_catalog},
     compiled_version,
     gguf::ArchMeta,
@@ -61,6 +63,28 @@ mod tray;
 /// Port used internally by llama-server; separate from the runtime's own port.
 const LLAMA_SERVER_PORT: u16 = 8766;
 
+/// Default port for the runtime's own HTTP server (chat UI + `/api` + the
+/// editor bridge's `/v1`).
+const DEFAULT_PORT: u16 = 8765;
+
+/// Request-body ceiling for the chat UI proxy.
+const CHAT_BODY_LIMIT_BYTES: usize = 10 * 1024 * 1024;
+
+/// Request-body ceiling for the editor bridge. Higher than the chat UI's:
+/// agentic clients (Cline, Roo Code) attach whole files, and a hard failure
+/// at the transport layer is far more confusing than a context-overflow
+/// error from the model.
+const BRIDGE_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
+
+/// Conservative KV-cache fallback (non-GQA worst case) for models whose GGUF
+/// header we couldn't parse. Matches the figure the UI's RAM preview uses, so
+/// the gate and the badge never disagree.
+const FALLBACK_KV_BYTES_PER_TOKEN: u64 = 524_288;
+
+/// Non-KV runtime overhead assumed by the RAM advisor for a llama-server
+/// process (weights and KV cache are accounted separately).
+const RUNTIME_OVERHEAD_BYTES: u64 = 512 * 1024 * 1024;
+
 /// Default idle-unload threshold in seconds. After this much inactivity the
 /// runtime SIGTERMs llama-server to release mlocked weights. Set to 0 via
 /// `--idle-timeout-secs 0` to disable.
@@ -92,7 +116,7 @@ enum RuntimeCommand {
     Serve {
         #[arg(long)]
         drive: PathBuf,
-        #[arg(long, default_value_t = 8765)]
+        #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
         #[arg(long, default_value_t = false)]
         open_browser: bool,
@@ -132,6 +156,12 @@ struct RuntimeState {
     /// Serializes spawn/health-wait so concurrent chat requests arriving
     /// after an idle-unload trigger exactly one relaunch.
     launch_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Port this runtime is listening on. Needed by the Origin allowlist and
+    /// by the bridge panel, which shows the user the base URL to paste.
+    port: u16,
+    /// In-RAM cache of the bridge bearer token so authenticating a request
+    /// doesn't hit the USB drive on every call. `None` until first read.
+    bridge_token: Arc<Mutex<Option<String>>>,
 }
 
 /// Everything needed to (re)start llama-server for a given model.
@@ -164,7 +194,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         RuntimeCommand::Inspect { drive } => {
-            let state = load_state(drive, DEFAULT_IDLE_TIMEOUT_SECS)?;
+            let state = load_state(drive, DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_PORT)?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&status_payload(&state, "Inspection only"))?
@@ -186,7 +216,7 @@ fn run_serve(
     open_browser: bool,
     idle_timeout_secs: u64,
 ) -> anyhow::Result<()> {
-    let state = Arc::new(load_state(drive, idle_timeout_secs)?);
+    let state = Arc::new(load_state(drive, idle_timeout_secs, port)?);
     let url = format!("http://127.0.0.1:{port}");
 
     // HTTP server runs on a background tokio runtime so the OS main thread
@@ -290,6 +320,14 @@ async fn serve_http(
             "/api/chats/{id}",
             get(api_get_chat).put(api_put_chat).delete(api_delete_chat),
         )
+        .route("/api/bridge", get(api_get_bridge).put(api_put_bridge))
+        .route("/api/bridge/rotate", post(api_rotate_bridge_token))
+        // OpenAI-compatible editor bridge. Token-gated and disabled by
+        // default — see docs/EDITOR-INTEGRATION.md.
+        .route("/v1/models", get(v1_models))
+        .route("/v1/chat/completions", post(v1_chat_completions))
+        .route("/v1/completions", post(v1_completions))
+        .layer(middleware::from_fn_with_state(state.clone(), origin_guard))
         .with_state(state.clone());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -310,7 +348,7 @@ async fn serve_http(
 // State helpers
 // ---------------------------------------------------------------------------
 
-fn load_state(drive: PathBuf, idle_timeout_secs: u64) -> anyhow::Result<RuntimeState> {
+fn load_state(drive: PathBuf, idle_timeout_secs: u64, port: u16) -> anyhow::Result<RuntimeState> {
     let layout = DriveLayout::new(drive);
     let catalog = if layout.catalog_path().exists() {
         Some(load_catalog(&layout.catalog_path())?)
@@ -326,15 +364,18 @@ fn load_state(drive: PathBuf, idle_timeout_secs: u64) -> anyhow::Result<RuntimeS
         shutdown: Arc::new(Notify::new()),
         last_launch: Arc::new(Mutex::new(None)),
         launch_lock: Arc::new(tokio::sync::Mutex::new(())),
+        port,
+        bridge_token: Arc::new(Mutex::new(None)),
     })
 }
 
-fn status_payload(state: &RuntimeState, message: &str) -> RuntimeStatus {
-    let current = state.layout.read_current().ok();
-    // The stick UI is a launcher, not a storefront: only catalog models whose
-    // GGUF is actually present in models/ are offered. The full catalog lives
-    // in the installer.
-    let catalog_models: Vec<ModelEntry> = state
+/// Catalog entries whose GGUF is actually present in `models/`.
+///
+/// The stick UI is a launcher, not a storefront: the full catalog lives in the
+/// installer, and both the status payload and the bridge's `/v1/models` offer
+/// only what can actually be loaded right now.
+fn present_catalog_models(state: &RuntimeState) -> Vec<ModelEntry> {
+    state
         .catalog
         .as_ref()
         .map(|c| {
@@ -344,7 +385,40 @@ fn status_payload(state: &RuntimeState, message: &str) -> RuntimeStatus {
                 .cloned()
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+/// Loose `.gguf` files in `models/` that have no catalog entry. A downloaded
+/// catalog model is not listed twice.
+fn present_drop_in_models(state: &RuntimeState, catalog_models: &[ModelEntry]) -> Vec<DropInModel> {
+    state
+        .layout
+        .discover_drop_in_models()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|d| {
+            d.path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| !catalog_models.iter().any(|m| m.file_name == n))
+                .unwrap_or(true)
+        })
+        .collect()
+}
+
+/// The id a drop-in model is addressed by: its filename without `.gguf`.
+/// Matches what `resolve_model_path` accepts and what the web UI derives.
+fn drop_in_id(model: &DropInModel) -> Option<String> {
+    model
+        .path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+}
+
+fn status_payload(state: &RuntimeState, message: &str) -> RuntimeStatus {
+    let current = state.layout.read_current().ok();
+    let catalog_models = present_catalog_models(state);
     let advisories = state
         .catalog
         .as_ref()
@@ -365,22 +439,7 @@ fn status_payload(state: &RuntimeState, message: &str) -> RuntimeStatus {
         .map(|m| usbuddy_core::gguf::read_arch_meta(&state.layout.models_dir().join(&m.file_name)))
         .collect();
 
-    // Drop-ins are .gguf files WITHOUT a catalog entry — don't list a
-    // downloaded catalog model twice.
-    let catalog_files: Vec<&String> = catalog_models.iter().map(|m| &m.file_name).collect();
-    let drop_in_models: Vec<DropInModel> = state
-        .layout
-        .discover_drop_in_models()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|d| {
-            d.path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| !catalog_files.iter().any(|f| f.as_str() == n))
-                .unwrap_or(true)
-        })
-        .collect();
+    let drop_in_models = present_drop_in_models(state, &catalog_models);
 
     RuntimeStatus {
         message: message.into(),
@@ -398,14 +457,14 @@ fn status_payload(state: &RuntimeState, message: &str) -> RuntimeStatus {
                 let kv_bytes_per_token = arch
                     .as_ref()
                     .map(|a| a.kv_bytes_per_token_f16())
-                    .unwrap_or(524_288); // non-GQA worst case as a safe fallback
+                    .unwrap_or(FALLBACK_KV_BYTES_PER_TOKEN);
                 assess_fit(
                     memory,
                     RamEstimateInput {
                         model_bytes: m.size_bytes,
                         context_tokens: 4_096,
                         kv_bytes_per_token,
-                        runtime_overhead_bytes: 512 * 1024 * 1024,
+                        runtime_overhead_bytes: RUNTIME_OVERHEAD_BYTES,
                     },
                 )
             })
@@ -415,6 +474,59 @@ fn status_payload(state: &RuntimeState, message: &str) -> RuntimeStatus {
         llama_port: LLAMA_SERVER_PORT,
         idle_timeout_secs: state.idle_timeout_secs,
         last_activity_epoch_secs: state.last_activity.load(Ordering::Relaxed),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Origin allowlist
+// ---------------------------------------------------------------------------
+
+/// Rejects cross-site browser requests to the whole HTTP surface.
+///
+/// The runtime listens on loopback, but loopback is not a security boundary
+/// against a *browser*: any page the user happens to visit can issue requests
+/// to `http://127.0.0.1:8765` from their tab. Without this, a random website
+/// could drive the model, enumerate saved chats, or hit `/api/shutdown-eject`.
+///
+/// Non-browser clients (every editor, extension host, curl) send no `Origin`
+/// and pass through untouched; that's what keeps the bridge usable. Browsers
+/// attach `Origin` to cross-origin requests and to same-origin non-GET ones,
+/// so the chat UI's own calls are matched by the allowlist rather than waved
+/// through. `*` is never used.
+async fn origin_guard(
+    State(state): State<Arc<RuntimeState>>,
+    req: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    let origin = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok());
+    if !origin_allowed(origin, state.port) {
+        return Err(AppError {
+            status: StatusCode::FORBIDDEN,
+            message: format!(
+                "cross-origin request rejected (Origin: {}). The USBuddy runtime only \
+                 accepts requests from its own UI or from non-browser clients.",
+                origin.unwrap_or("<none>")
+            ),
+            openai_type: None,
+        });
+    }
+    Ok(next.run(req).await)
+}
+
+/// `None` (no Origin header) means a non-browser client — allowed. Anything
+/// else must be this server's own origin, spelled either way round.
+fn origin_allowed(origin: Option<&str>, port: u16) -> bool {
+    match origin {
+        None => true,
+        Some(o) => {
+            let o = o.trim();
+            o == format!("http://127.0.0.1:{port}")
+                || o == format!("http://localhost:{port}")
+                || o == format!("http://[::1]:{port}")
+        }
     }
 }
 
@@ -510,13 +622,20 @@ async fn api_launch(
 /// (swap-to-disk is the #1 footprint leak). Callers must hold `launch_lock`.
 async fn start_llama(state: &RuntimeState, params: &LaunchParams) -> Result<RamDecision, AppError> {
     let memory = detect_memory();
+    // Price the KV cache from the model's own attention shape rather than a
+    // single constant. This matters much more now that the editor bridge runs
+    // 16K+ contexts, and it makes the gate agree with the band the UI already
+    // previews for the same model.
+    let kv_bytes_per_token = usbuddy_core::gguf::read_arch_meta(&params.model_path)
+        .map(|a| a.kv_bytes_per_token_f16())
+        .unwrap_or(FALLBACK_KV_BYTES_PER_TOKEN);
     let decision = assess_fit(
         memory,
         RamEstimateInput {
             model_bytes: params.model_bytes,
             context_tokens: params.context_tokens,
-            kv_bytes_per_token: 131_072,
-            runtime_overhead_bytes: 512 * 1024 * 1024,
+            kv_bytes_per_token,
+            runtime_overhead_bytes: RUNTIME_OVERHEAD_BYTES,
         },
     );
     if decision.band == FitBand::Red {
@@ -540,6 +659,11 @@ async fn start_llama(state: &RuntimeState, params: &LaunchParams) -> Result<RamD
         .arg("--host")
         .arg("127.0.0.1")
         .arg("--no-webui")
+        // Apply the model's own chat template. Without --jinja llama-server
+        // never emits OpenAI-shaped `tool_calls`, which means agent mode in
+        // Cline/Continue/Roo simply doesn't work — and templated models get
+        // better-formed prompts in the chat UI too.
+        .arg("--jinja")
         .spawn()
         .map_err(|e| AppError::internal(format!("failed to spawn llama-server: {e}")))?;
 
@@ -567,27 +691,7 @@ async fn start_llama(state: &RuntimeState, params: &LaunchParams) -> Result<RamD
 async fn ensure_llama_running(state: &RuntimeState) -> Result<(), AppError> {
     let _launching = state.launch_lock.lock().await;
 
-    let alive = {
-        let mut guard = state
-            .llama_process
-            .lock()
-            .map_err(|_| AppError::internal("llama-server process mutex poisoned"))?;
-        match guard.as_mut() {
-            Some(child) => match child.try_wait() {
-                Ok(None) => true,
-                // Exited (crash) — drop the dead handle so we relaunch below.
-                Ok(Some(_)) => {
-                    guard.take();
-                    false
-                }
-                Err(e) => {
-                    return Err(AppError::internal(format!("inspecting llama-server: {e}")));
-                }
-            },
-            None => false,
-        }
-    };
-    if alive {
+    if llama_alive(state)? {
         return Ok(());
     }
 
@@ -607,6 +711,27 @@ async fn ensure_llama_running(state: &RuntimeState) -> Result<(), AppError> {
     start_llama(state, &params).await?;
     touch_activity(state);
     Ok(())
+}
+
+/// Is llama-server still up? Reaps the handle if the child has exited so the
+/// caller can relaunch. Callers must hold `launch_lock`.
+fn llama_alive(state: &RuntimeState) -> Result<bool, AppError> {
+    let mut guard = state
+        .llama_process
+        .lock()
+        .map_err(|_| AppError::internal("llama-server process mutex poisoned"))?;
+    match guard.as_mut() {
+        Some(child) => match child.try_wait() {
+            Ok(None) => Ok(true),
+            // Exited (crash) — drop the dead handle so the caller relaunches.
+            Ok(Some(_)) => {
+                guard.take();
+                Ok(false)
+            }
+            Err(e) => Err(AppError::internal(format!("inspecting llama-server: {e}"))),
+        },
+        None => Ok(false),
+    }
 }
 
 /// Polls `/health` on the spawned llama-server until it returns 200, the
@@ -728,18 +853,40 @@ async fn api_chat_proxy(
 ) -> Result<Response, AppError> {
     touch_activity(&state);
     ensure_llama_running(&state).await?;
-    let client = reqwest::Client::new();
     let path = uri.path().replacen("/api/chat", "/v1/chat", 1);
     let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
-    let upstream = format!("http://127.0.0.1:{LLAMA_SERVER_PORT}{path}{query}");
-
-    let body_bytes = axum::body::to_bytes(body, 10 * 1024 * 1024)
+    let body_bytes = axum::body::to_bytes(body, CHAT_BODY_LIMIT_BYTES)
         .await
         .map_err(|e| AppError::internal(e.to_string()))?;
+    proxy_to_llama(method, &path, &query, &headers, body_bytes).await
+}
+
+/// Forwards an already-buffered request to llama-server and streams the
+/// response straight back. Shared by the chat UI proxy and the editor bridge.
+///
+/// `path` is the upstream path (`/v1/chat/completions`), `query` the raw
+/// query string including its leading `?`, or empty.
+async fn proxy_to_llama(
+    method: Method,
+    path: &str,
+    query: &str,
+    headers: &HeaderMap,
+    body_bytes: axum::body::Bytes,
+) -> Result<Response, AppError> {
+    let client = reqwest::Client::new();
+    let upstream = format!("http://127.0.0.1:{LLAMA_SERVER_PORT}{path}{query}");
 
     let mut upstream_req = client.request(method, &upstream).body(body_bytes);
-    for (name, value) in &headers {
-        if name == header::HOST {
+    for (name, value) in headers {
+        // HOST belongs to us, not upstream. The credentials are ours too:
+        // the bridge token authenticates the client to USBuddy and has no
+        // meaning to llama-server, so it stops here rather than leaking into
+        // a subprocess's logs. CONTENT_LENGTH is recomputed by reqwest.
+        if name == header::HOST
+            || name == header::AUTHORIZATION
+            || name == header::CONTENT_LENGTH
+            || name.as_str().eq_ignore_ascii_case("x-api-key")
+        {
             continue;
         }
         if let Ok(v) = value.to_str() {
@@ -778,12 +925,18 @@ async fn api_get_prefs(State(state): State<Arc<RuntimeState>>) -> Json<chats::Ru
     ))
 }
 
+/// Accepts a partial update. The chat header (incognito) and the bridge panel
+/// both write prefs and each knows only its own fields — a full-object PUT
+/// from either would silently clobber the other's settings.
 async fn api_put_prefs(
     State(state): State<Arc<RuntimeState>>,
-    Json(prefs): Json<chats::RuntimePrefs>,
+    Json(patch): Json<chats::RuntimePrefsPatch>,
 ) -> Result<Json<chats::RuntimePrefs>, AppError> {
+    let path = state.layout.runtime_prefs_path();
+    let mut prefs = chats::RuntimePrefs::load(&path);
+    prefs.apply(&patch);
     prefs
-        .save(&state.layout.runtime_prefs_path())
+        .save(&path)
         .map_err(|e| AppError::internal(e.to_string()))?;
     Ok(Json(prefs))
 }
@@ -830,6 +983,340 @@ async fn api_delete_chat(
 ) -> Result<Json<serde_json::Value>, AppError> {
     chats::delete(&state.layout.chats_dir(), &id).map_err(|e| AppError::internal(e.to_string()))?;
     Ok(Json(serde_json::json!({ "deleted": true })))
+}
+
+// ---------------------------------------------------------------------------
+// Route handlers — editor bridge (OpenAI-compatible /v1)
+// ---------------------------------------------------------------------------
+
+/// Reads the bridge bearer token, caching it in RAM so authenticating a
+/// request never touches the USB drive twice.
+///
+/// `create` materializes a token when none exists. That's reserved for paths
+/// the user explicitly drove — enabling the bridge, rotating the token, or
+/// serving a request while the bridge is already enabled. Merely *reading*
+/// the bridge panel must not write to the drive.
+fn bridge_token(state: &RuntimeState, create: bool) -> Result<Option<String>, AppError> {
+    {
+        let cached = state
+            .bridge_token
+            .lock()
+            .map_err(|_| AppError::internal("bridge token mutex poisoned"))?;
+        if let Some(token) = cached.as_ref() {
+            return Ok(Some(token.clone()));
+        }
+    }
+
+    let path = state.layout.bridge_token_path();
+    let token = if create {
+        Some(
+            bridge::load_or_create_token(&path)
+                .map_err(|e| AppError::internal(format!("bridge token: {e}")))?,
+        )
+    } else {
+        std::fs::read_to_string(&path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+
+    if let Some(token) = &token {
+        *state
+            .bridge_token
+            .lock()
+            .map_err(|_| AppError::internal("bridge token mutex poisoned"))? = Some(token.clone());
+    }
+    Ok(token)
+}
+
+/// Gate for every `/v1` route: the bridge must be enabled and the caller must
+/// present the token. Returns the prefs so callers get `bridge_ctx_tokens`
+/// without reading the file twice.
+///
+/// Prefs are read per request rather than cached so the UI toggle takes effect
+/// immediately and a hand-edited `runtime-prefs.toml` is honored.
+fn bridge_guard(
+    state: &RuntimeState,
+    headers: &HeaderMap,
+) -> Result<chats::RuntimePrefs, AppError> {
+    let prefs = chats::RuntimePrefs::load(&state.layout.runtime_prefs_path());
+    if !prefs.bridge_enabled {
+        return Err(AppError {
+            status: StatusCode::NOT_FOUND,
+            message: "the USBuddy editor bridge is disabled. Turn on \"Developer bridge\" \
+                      in the USBuddy chat UI sidebar to enable it."
+                .into(),
+            openai_type: Some("invalid_request_error"),
+        });
+    }
+
+    let presented = headers
+        .get(header::AUTHORIZATION)
+        .or_else(|| headers.get("x-api-key"))
+        .and_then(|v| v.to_str().ok())
+        .and_then(bridge::parse_bearer);
+
+    // The bridge is on, so the user has opted in — materialize the token if
+    // the file went missing rather than wedging every request.
+    let stored = bridge_token(state, true)?.unwrap_or_default();
+
+    match presented {
+        Some(token) if bridge::token_matches(token, &stored) => Ok(prefs),
+        _ => Err(AppError {
+            status: StatusCode::UNAUTHORIZED,
+            message: "invalid or missing API key. Copy the token from the USBuddy \
+                      chat UI (sidebar → Developer bridge) into your editor's \
+                      API-key field."
+                .into(),
+            openai_type: Some("invalid_request_error"),
+        }),
+    }
+}
+
+/// Every id the drive can serve — catalog ids first, then drop-in file stems.
+fn bridge_model_ids(state: &RuntimeState) -> Vec<String> {
+    let catalog_models = present_catalog_models(state);
+    let drop_ins = present_drop_in_models(state, &catalog_models);
+    catalog_models
+        .iter()
+        .map(|m| m.id.clone())
+        .chain(drop_ins.iter().filter_map(drop_in_id))
+        .collect()
+}
+
+/// Turns a client-supplied model name into launch parameters, or `None` when
+/// the drive can't serve it. Accepts catalog ids, catalog aliases, and
+/// drop-in file stems — the same vocabulary `resolve_model_path` accepts.
+fn resolve_bridge_model(state: &RuntimeState, name: &str, ctx_tokens: u32) -> Option<LaunchParams> {
+    let catalog_models = present_catalog_models(state);
+    let (model_id, model_path, model_bytes) = if let Some(entry) = catalog_models
+        .iter()
+        .find(|m| m.id == name || m.aliases.iter().any(|a| a == name))
+    {
+        let path = state.layout.models_dir().join(&entry.file_name);
+        (entry.id.clone(), path, entry.size_bytes)
+    } else {
+        let drop_in = present_drop_in_models(state, &catalog_models)
+            .into_iter()
+            .find(|d| drop_in_id(d).as_deref() == Some(name))?;
+        let bytes = if drop_in.size_bytes > 0 {
+            drop_in.size_bytes
+        } else {
+            std::fs::metadata(&drop_in.path)
+                .map(|m| m.len())
+                .unwrap_or(0)
+        };
+        (name.to_string(), drop_in.path, bytes)
+    };
+
+    // Never ask llama-server for more context than the model was trained for.
+    let trained_cap = usbuddy_core::gguf::read_arch_meta(&model_path).map(|a| a.context_length);
+    Some(LaunchParams {
+        model_id,
+        model_path,
+        model_bytes,
+        context_tokens: bridge::clamp_ctx_tokens(ctx_tokens, trained_cap),
+    })
+}
+
+/// Makes llama-server ready to serve `requested`, starting it cold, waking it
+/// after an idle-unload, or swapping models as needed. Returns the id actually
+/// being served.
+///
+/// The chat UI's launch flow can't be a prerequisite here: an editor connects
+/// whenever it likes and names its model in the request body.
+async fn ensure_bridge_model(
+    state: &RuntimeState,
+    requested: Option<&str>,
+    ctx_tokens: u32,
+) -> Result<String, AppError> {
+    let _launching = state.launch_lock.lock().await;
+    let running = llama_alive(state)?;
+    let loaded = state
+        .last_launch
+        .lock()
+        .map_err(|_| AppError::internal("last-launch mutex poisoned"))?
+        .clone();
+
+    let resolved = requested
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .and_then(|m| resolve_bridge_model(state, m, ctx_tokens));
+
+    let params = match resolved {
+        Some(p) => p,
+        // Unrecognized or absent model name. If we already have something
+        // loaded (or idle-unloaded but remembered), serve that instead of
+        // failing a request we can obviously satisfy — clients hardcode and
+        // mangle model names, and a working completion beats a 400.
+        None => match loaded.clone() {
+            Some(prev) => prev,
+            None => {
+                let ids = bridge_model_ids(state);
+                let available = if ids.is_empty() {
+                    "none — this drive has no models installed".to_string()
+                } else {
+                    ids.join(", ")
+                };
+                return Err(AppError::bad_request(format!(
+                    "model '{}' is not on this drive. Available: {available}",
+                    requested.unwrap_or("").trim()
+                ))
+                .with_openai_type("invalid_request_error"));
+            }
+        },
+    };
+
+    // Already serving exactly this? Then nothing to do. The context is part
+    // of the comparison: raising the slider in the bridge panel has to take
+    // effect on the next request, and both sides are post-clamp so a model
+    // whose trained cap is below the pref doesn't reload forever.
+    let already_serving = running
+        && loaded.as_ref().is_some_and(|p| {
+            p.model_id == params.model_id && p.context_tokens == params.context_tokens
+        });
+    if already_serving {
+        return Ok(params.model_id);
+    }
+
+    // Cold start, wake-after-idle, crash recovery, a model swap, or a context
+    // change. The chat UI and the bridge share one llama-server, so naming a
+    // different model here swaps it out from under an open chat tab — same as
+    // Ollama.
+    eprintln!(
+        "USBuddy bridge: starting model '{}' ({} ctx)",
+        params.model_id, params.context_tokens
+    );
+    let model_id = params.model_id.clone();
+    start_llama(state, &params)
+        .await
+        .map_err(AppError::into_openai)?;
+    *state
+        .last_launch
+        .lock()
+        .map_err(|_| AppError::internal("last-launch mutex poisoned"))? = Some(params);
+    Ok(model_id)
+}
+
+async fn v1_models(
+    State(state): State<Arc<RuntimeState>>,
+    headers: HeaderMap,
+) -> Result<Json<OpenAiModelList>, AppError> {
+    bridge_guard(&state, &headers)?;
+    let created = now_epoch_secs();
+    Ok(Json(OpenAiModelList {
+        object: "list",
+        data: bridge_model_ids(&state)
+            .into_iter()
+            .map(|id| OpenAiModel {
+                id,
+                object: "model",
+                created,
+                owned_by: "usbuddy",
+            })
+            .collect(),
+    }))
+}
+
+async fn v1_chat_completions(
+    State(state): State<Arc<RuntimeState>>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Response, AppError> {
+    bridge_completion(state, headers, body, "/v1/chat/completions").await
+}
+
+async fn v1_completions(
+    State(state): State<Arc<RuntimeState>>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Response, AppError> {
+    bridge_completion(state, headers, body, "/v1/completions").await
+}
+
+/// Shared body of both bridge completion routes: authenticate, buffer the
+/// request (we need to read `model` out of it), make that model ready, then
+/// hand the original bytes to llama-server unmodified.
+async fn bridge_completion(
+    state: Arc<RuntimeState>,
+    headers: HeaderMap,
+    body: Body,
+    upstream_path: &str,
+) -> Result<Response, AppError> {
+    let prefs = bridge_guard(&state, &headers)?;
+    touch_activity(&state);
+
+    let body_bytes = axum::body::to_bytes(body, BRIDGE_BODY_LIMIT_BYTES)
+        .await
+        .map_err(|e| {
+            AppError::bad_request(format!("request body too large or unreadable: {e}"))
+                .with_openai_type("invalid_request_error")
+        })?;
+
+    let requested = serde_json::from_slice::<serde_json::Value>(&body_bytes)
+        .ok()
+        .and_then(|v| {
+            v.get("model")
+                .and_then(|m| m.as_str())
+                .map(|s| s.to_string())
+        });
+
+    ensure_bridge_model(&state, requested.as_deref(), prefs.bridge_ctx_tokens).await?;
+    touch_activity(&state);
+
+    // llama-server ignores the `model` field, so the body goes through as-is.
+    proxy_to_llama(Method::POST, upstream_path, "", &headers, body_bytes)
+        .await
+        .map_err(AppError::into_openai)
+}
+
+// ---------------------------------------------------------------------------
+// Route handlers — bridge control (used by the chat UI's settings panel)
+// ---------------------------------------------------------------------------
+
+fn bridge_info(state: &RuntimeState, create_token: bool) -> Result<BridgeInfo, AppError> {
+    let prefs = chats::RuntimePrefs::load(&state.layout.runtime_prefs_path());
+    Ok(BridgeInfo {
+        enabled: prefs.bridge_enabled,
+        ctx_tokens: prefs.bridge_ctx_tokens,
+        base_url: format!("http://127.0.0.1:{}/v1", state.port),
+        token: bridge_token(state, create_token)?,
+        models: bridge_model_ids(state),
+        min_ctx_tokens: bridge::MIN_BRIDGE_CTX_TOKENS,
+    })
+}
+
+async fn api_get_bridge(
+    State(state): State<Arc<RuntimeState>>,
+) -> Result<Json<BridgeInfo>, AppError> {
+    // Read-only: never mints a token just because the panel was opened.
+    bridge_info(&state, false).map(Json)
+}
+
+async fn api_put_bridge(
+    State(state): State<Arc<RuntimeState>>,
+    Json(patch): Json<chats::RuntimePrefsPatch>,
+) -> Result<Json<BridgeInfo>, AppError> {
+    let prefs_path = state.layout.runtime_prefs_path();
+    let mut prefs = chats::RuntimePrefs::load(&prefs_path);
+    prefs.apply(&patch);
+    prefs
+        .save(&prefs_path)
+        .map_err(|e| AppError::internal(format!("saving prefs: {e}")))?;
+    // Turning the bridge on is the user action that mints the token.
+    bridge_info(&state, prefs.bridge_enabled).map(Json)
+}
+
+async fn api_rotate_bridge_token(
+    State(state): State<Arc<RuntimeState>>,
+) -> Result<Json<BridgeInfo>, AppError> {
+    let token = bridge::rotate_token(&state.layout.bridge_token_path())
+        .map_err(|e| AppError::internal(format!("rotating bridge token: {e}")))?;
+    *state
+        .bridge_token
+        .lock()
+        .map_err(|_| AppError::internal("bridge token mutex poisoned"))? = Some(token);
+    bridge_info(&state, false).map(Json)
 }
 
 // ---------------------------------------------------------------------------
@@ -930,6 +1417,10 @@ fn kill_llama_server(process: &Mutex<Option<Child>>) {
 struct AppError {
     status: StatusCode,
     message: String,
+    /// When set, the body is rendered in OpenAI's `{"error":{"message",…}}`
+    /// envelope instead of USBuddy's flat `{"error": "…"}`. Editor clients
+    /// parse the former and will show a raw status code for anything else.
+    openai_type: Option<&'static str>,
 }
 
 impl AppError {
@@ -937,29 +1428,55 @@ impl AppError {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: msg.into(),
+            openai_type: None,
         }
     }
     fn internal(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: msg.into(),
+            openai_type: None,
         }
     }
     fn bad_gateway(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
             message: msg.into(),
+            openai_type: None,
         }
+    }
+
+    /// Marks this error for OpenAI-envelope rendering with an explicit type.
+    fn with_openai_type(mut self, error_type: &'static str) -> Self {
+        self.openai_type = Some(error_type);
+        self
+    }
+
+    /// Re-labels an error raised by shared (non-bridge) code so it reaches an
+    /// editor in the shape that editor understands. 4xx are the caller's
+    /// fault, 5xx are ours.
+    fn into_openai(self) -> Self {
+        if self.openai_type.is_some() {
+            return self;
+        }
+        let kind = if self.status.is_client_error() {
+            "invalid_request_error"
+        } else {
+            "api_error"
+        };
+        self.with_openai_type(kind)
     }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        (
-            self.status,
-            Json(serde_json::json!({ "error": self.message })),
-        )
-            .into_response()
+        let body = match self.openai_type {
+            Some(error_type) => serde_json::json!({
+                "error": { "message": self.message, "type": error_type }
+            }),
+            None => serde_json::json!({ "error": self.message }),
+        };
+        (self.status, Json(body)).into_response()
     }
 }
 
@@ -1029,4 +1546,90 @@ struct LaunchResponse {
     model_id: String,
     llama_port: u16,
     ram_band: String,
+}
+
+/// State of the editor bridge, for the chat UI's settings panel.
+#[derive(Debug, Serialize)]
+struct BridgeInfo {
+    enabled: bool,
+    ctx_tokens: u32,
+    /// What the user pastes into their editor's "base URL" field.
+    base_url: String,
+    /// `None` until the bridge has been enabled at least once — reading the
+    /// panel must not mint a token.
+    token: Option<String>,
+    models: Vec<String>,
+    min_ctx_tokens: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiModel {
+    id: String,
+    object: &'static str,
+    created: u64,
+    owned_by: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiModelList {
+    object: &'static str,
+    data: Vec<OpenAiModel>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_browser_clients_pass_the_origin_guard() {
+        // Editors, extension hosts, and curl send no Origin at all.
+        assert!(origin_allowed(None, 8765));
+    }
+
+    #[test]
+    fn own_origin_is_allowed_either_spelling() {
+        assert!(origin_allowed(Some("http://127.0.0.1:8765"), 8765));
+        assert!(origin_allowed(Some("http://localhost:8765"), 8765));
+        assert!(origin_allowed(Some("http://[::1]:8765"), 8765));
+    }
+
+    #[test]
+    fn foreign_origins_are_rejected() {
+        assert!(!origin_allowed(Some("https://evil.example"), 8765));
+        assert!(!origin_allowed(Some("null"), 8765));
+        // Right host, wrong port — another local service, not us.
+        assert!(!origin_allowed(Some("http://127.0.0.1:3000"), 8765));
+        // https:// to our own port is still not an origin we serve.
+        assert!(!origin_allowed(Some("https://127.0.0.1:8765"), 8765));
+        // Prefix tricks must not match.
+        assert!(!origin_allowed(
+            Some("http://127.0.0.1:8765.evil.com"),
+            8765
+        ));
+    }
+
+    #[test]
+    fn errors_render_in_the_shape_the_caller_expects() {
+        // Flat shape for the chat UI.
+        let plain = AppError::bad_request("nope");
+        assert!(plain.openai_type.is_none());
+
+        // OpenAI envelope for editor clients, with severity-appropriate type.
+        assert_eq!(
+            AppError::bad_request("nope").into_openai().openai_type,
+            Some("invalid_request_error")
+        );
+        assert_eq!(
+            AppError::internal("boom").into_openai().openai_type,
+            Some("api_error")
+        );
+        // An explicit label is never overwritten.
+        assert_eq!(
+            AppError::internal("boom")
+                .with_openai_type("invalid_request_error")
+                .into_openai()
+                .openai_type,
+            Some("invalid_request_error")
+        );
+    }
 }

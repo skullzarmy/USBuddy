@@ -51,7 +51,24 @@ export interface RuntimeStatus {
 
 export interface RuntimePrefs {
     save_chats: boolean;
+    bridge_enabled: boolean;
+    bridge_ctx_tokens: number;
 }
+
+/// State of the OpenAI-compatible editor bridge. `token` is null until the
+/// bridge has been enabled at least once — opening the panel never mints one.
+export interface BridgeInfo {
+    enabled: boolean;
+    ctx_tokens: number;
+    base_url: string;
+    token: string | null;
+    models: string[];
+    min_ctx_tokens: number;
+}
+
+/// Partial prefs update. The runtime merges it, so each surface sends only
+/// the fields it owns and never clobbers the others.
+export type PrefsPatch = Partial<RuntimePrefs>;
 
 export interface ChatMessage {
     role: "user" | "assistant" | "system";
@@ -80,25 +97,61 @@ export async function fetchStatus(): Promise<RuntimeStatus> {
     return r.json();
 }
 
+const PREFS_FALLBACK: RuntimePrefs = { save_chats: false, bridge_enabled: false, bridge_ctx_tokens: 16384 };
+
 export async function fetchPrefs(): Promise<RuntimePrefs> {
     try {
         const r = await fetch("/api/prefs");
-        if (!r.ok) return { save_chats: false };
+        if (!r.ok) return PREFS_FALLBACK;
         return await r.json();
     } catch {
-        return { save_chats: false };
+        return PREFS_FALLBACK;
     }
 }
 
-export async function putPrefs(prefs: RuntimePrefs): Promise<void> {
+export async function putPrefs(patch: PrefsPatch): Promise<void> {
     try {
         await fetch("/api/prefs", {
             method: "PUT",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify(prefs),
+            body: JSON.stringify(patch),
         });
     } catch {
         /* best-effort; UI state remains the source of truth this session */
+    }
+}
+
+export async function fetchBridge(): Promise<BridgeInfo | null> {
+    try {
+        const r = await fetch("/api/bridge");
+        if (!r.ok) return null;
+        return await r.json();
+    } catch {
+        return null;
+    }
+}
+
+export async function putBridge(patch: PrefsPatch): Promise<BridgeInfo | null> {
+    try {
+        const r = await fetch("/api/bridge", {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(patch),
+        });
+        if (!r.ok) return null;
+        return await r.json();
+    } catch {
+        return null;
+    }
+}
+
+export async function rotateBridgeToken(): Promise<BridgeInfo | null> {
+    try {
+        const r = await fetch("/api/bridge/rotate", { method: "POST" });
+        if (!r.ok) return null;
+        return await r.json();
+    } catch {
+        return null;
     }
 }
 

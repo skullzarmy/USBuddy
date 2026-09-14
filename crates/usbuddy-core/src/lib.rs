@@ -1,4 +1,5 @@
 pub mod atomic;
+pub mod bridge;
 pub mod catalog;
 pub mod download;
 pub mod eject;

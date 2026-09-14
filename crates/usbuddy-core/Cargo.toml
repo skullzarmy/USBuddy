@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 flate2.workspace = true
+getrandom.workspace = true
 reqwest.workspace = true
 semver.workspace = true
 serde.workspace = true

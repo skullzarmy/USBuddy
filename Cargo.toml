@@ -10,7 +10,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["Joe Peterson <opensource@skullzarmy.dev>"]
@@ -21,6 +21,7 @@ anyhow = "1.0.102"
 axum = { version = "0.8.9", features = ["json"] }
 clap = { version = "4.6.1", features = ["derive"] }
 flate2 = "1.0.34"
+getrandom = "0.3.1"
 reqwest = { version = "0.12.20", features = ["blocking", "stream", "json"] }
 semver = { version = "1.0.28", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
