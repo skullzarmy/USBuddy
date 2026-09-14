@@ -90,12 +90,13 @@ serves an OpenAI-compatible `/v1` endpoint on loopback. Point Continue,
 Cline, Roo Code, Zed, or VS Code's BYOK provider at it and your coding
 assistant thinks with the model on the stick — nothing leaves the host.
 
-Off by default, bearer-token gated, `127.0.0.1` only, and it starts or
+Off by default, bearer-token gated, `127.0.0.1` only. It starts and
 swaps models on demand under the same RAM-fit gate as the chat UI.
-Cursor's base-URL override is the one thing that cannot work (it routes
-through Cursor's servers) — run an extension inside Cursor instead.
-Setup per editor, plus the autocomplete and VS Code extension plans, is
-in [docs/EDITOR-INTEGRATION.md](docs/EDITOR-INTEGRATION.md).
+
+Cursor's base-URL override routes through Cursor's servers and can't
+reach loopback — run Continue or Cline inside Cursor instead. Per-editor
+setup, plus the autocomplete and VS Code extension plans, is in
+[docs/EDITOR-INTEGRATION.md](docs/EDITOR-INTEGRATION.md).
 
 ## Status
 
