@@ -14,7 +14,7 @@ jobs:
         permissions:
             contents: read
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
               with:
                   fetch-depth: 0 # version-check needs the v* tags
             - uses: dtolnay/rust-toolchain@stable
@@ -26,7 +26,7 @@ jobs:
         permissions:
             contents: read
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
             - uses: dtolnay/rust-toolchain@stable
             - uses: Swatinem/rust-cache@v2
             - name: Install Linux GUI deps (eframe + tray-icon)
@@ -49,7 +49,7 @@ jobs:
             matrix:
                 os: [ubuntu-latest, macos-latest, windows-latest]
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
             - uses: dtolnay/rust-toolchain@stable
             - uses: Swatinem/rust-cache@v2
             - name: Install Linux GUI deps
@@ -62,7 +62,7 @@ jobs:
                     libgl1-mesa-dev libssl-dev pkg-config \
                     libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
             - run: cargo test --workspace
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v7
               with:
                   node-version: 22
             - run: npm --prefix ui/web ci
@@ -77,7 +77,7 @@ jobs:
             matrix:
                 os: [ubuntu-latest, macos-latest, windows-latest]
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
             - uses: dtolnay/rust-toolchain@stable
             - uses: Swatinem/rust-cache@v2
             - name: Install Linux GUI deps
@@ -89,7 +89,7 @@ jobs:
                     libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
                     libgl1-mesa-dev libssl-dev pkg-config \
                     libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v7
               with:
                   node-version: 22
             - run: npm --prefix ui/web ci
@@ -100,10 +100,34 @@ jobs:
         runs-on: ubuntu-latest
         permissions:
             contents: read
-        if: github.event_name == 'pull_request' || github.event_name == 'schedule'
+        # No `if:` gate. This job used to require pull_request or schedule,
+        # both of which were disabled along with the other automatic triggers
+        # — so it could never run at all. It's also the reason a dependency
+        # could be added without any advisory check ever happening.
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
             - uses: dtolnay/rust-toolchain@stable
             - uses: Swatinem/rust-cache@v2
-            - run: cargo install cargo-audit --locked
-            - run: cargo audit || true
+            # Prebuilt binary instead of `cargo install cargo-audit --locked`,
+            # which compiles it from source on every run. Minutes matter here:
+            # this workflow is dispatch-only precisely to conserve them.
+            - uses: taiki-e/install-action@v2
+              with:
+                  tool: cargo-audit
+            # Previously `cargo audit || true`, which discarded the exit code —
+            # a known-vulnerable dependency produced a green check. For a
+            # project whose pitch is footprint and supply-chain posture, a
+            # silent advisory check is worse than none. Fails now.
+            #
+            # The two ignores are quick-xml 0.39.4, pulled in only by
+            # wayland-scanner (a proc-macro) via winit/eframe/rfd on Linux.
+            # Both advisories are DoS-on-untrusted-XML; here quick-xml parses
+            # the Wayland protocol XML that ships inside wayland-rs, at build
+            # time, and is not present in any shipped binary. The fix needs
+            # >=0.41.0, which wayland-scanner doesn't allow yet — so this is
+            # upstream's to resolve. Drop both ignores once it bumps; leaving
+            # a stale ignore is how an exploitable advisory gets waved through.
+            - run: |
+                  cargo audit \
+                    --ignore RUSTSEC-2026-0194 \
+                    --ignore RUSTSEC-2026-0195
