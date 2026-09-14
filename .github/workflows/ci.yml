@@ -7,6 +7,20 @@ on:
     workflow_dispatch:
 
 jobs:
+    # Cheap and dependency-free, so it's its own job: a forgotten version bump
+    # shows up as a distinct red X instead of buried in clippy output.
+    version:
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0 # version-check needs the v* tags
+            - uses: dtolnay/rust-toolchain@stable
+            - uses: Swatinem/rust-cache@v2
+            - run: cargo run -p xtask -- version-check
+
     lint:
         runs-on: ubuntu-latest
         permissions:

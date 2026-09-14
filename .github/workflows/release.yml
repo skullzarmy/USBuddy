@@ -22,8 +22,17 @@ jobs:
     validate:
         runs-on: ubuntu-latest
         steps:
+            # Tags are needed by version-check; the default checkout has none.
             - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
             - uses: dtolnay/rust-toolchain@stable
+            # Fail before anything is built or tagged if the dispatched version
+            # isn't the one committed. USBUDDY_VERSION (set below) overrides
+            # Cargo.toml in the built binaries, so without this gate the tag and
+            # a from-source build can silently disagree.
+            - name: Version matches the committed workspace version
+              run: cargo run -p xtask -- version-check --expect '${{ inputs.version }}'
             - name: Install Linux GUI deps (eframe + tray-icon)
               run: |
                   sudo apt-get update

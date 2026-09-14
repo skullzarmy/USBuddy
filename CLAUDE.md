@@ -20,7 +20,7 @@ Cargo workspace (`resolver = "2"`, edition 2024). Members:
 - `crates/usbuddy-installer-tui` — `ratatui` interactive shell. Thin surface over core.
 - `crates/usbuddy-installer-gui` — `eframe`/`egui` desktop app. Thin surface over core.
 - `crates/usbuddy-runtime` — localhost HTTP server (`axum`) that spawns/kills `llama-server`, reverse-proxies chat, serves the embedded SPA, and idle-unloads weights after 5 min.
-- `xtask` — maintainer tool. `catalog-fetch` regenerates `fixtures/catalog/official.catalog.json` from `seed.toml` by fetching SHA256+size from HF LFS pointers (never downloads model bytes).
+- `xtask` — maintainer tool. `catalog-fetch` regenerates `fixtures/catalog/official.catalog.json` from `seed.toml` by fetching SHA256+size from HF LFS pointers (never downloads model bytes). `version-check` guards the version bump (see Releases).
 - `ui/web` — React + TypeScript + Vite + Tailwind SPA (Radix primitives, zustand state). Built into `ui/web/dist/` with fixed filenames (no content hashes); the runtime embeds `dist/index.html`, `dist/assets/app.js`, `dist/assets/styles.css` via `include_str!` at compile time. **`dist/` is committed** so a plain `cargo build` still bundles it — after changing UI sources you must run `npm --prefix ui/web run build` and commit the regenerated `dist/`.
 
 When adding behavior, default to putting it in `usbuddy-core` and exposing it via all three installer surfaces + (where relevant) the runtime. Don't duplicate logic into the CLI/TUI/GUI crates.
@@ -53,6 +53,9 @@ npm --prefix ui/web run dev     # vite dev server, proxies /api to :8765
 # Maintainer: regenerate the curated catalog from seed.toml
 cargo run -p xtask -- catalog-fetch
 HF_TOKEN=hf_xxx cargo run -p xtask -- catalog-fetch   # includes gated entries
+
+# Maintainer: fail if the workspace version wasn't bumped past the last v* tag
+cargo run -p xtask -- version-check
 ```
 
 ### Typical dev loop against a scratch "drive"
@@ -89,8 +92,9 @@ Never write to the drive during a runtime session. Runtime state is RAM-only.
 
 ## Releases
 
-- `ci.yml` runs lint/test/build-check/audit on PRs and pushes to `main`.
-- `release.yml` is **manual `workflow_dispatch`** with a `version` input. Auto-creates the tag `v{version}`, builds the matrix (windows-x64, macos-universal2 via `lipo`, linux-x64), generates `SHA256SUMS.txt`, CycloneDX SBOM, and SLSA build provenance attestation, then produces a draft release. Maintainer publishes manually.
+- **Bump `[workspace.package] version` in the root `Cargo.toml` in the same commit as any runtime-affecting change.** The drive layout is keyed by version (`versions/{ver}/`, `current.json`), so reusing a version makes `install-runtime` overwrite the active tree in place instead of staging a new one with rollback. `cargo run -p xtask -- version-check` enforces it locally; it fails if the workspace version isn't ahead of the latest `v*` tag.
+- `ci.yml` is **manual `workflow_dispatch` only** (automatic triggers are disabled to conserve Actions minutes) — run it from the Actions tab or `gh workflow run ci.yml`. Because nothing runs automatically, `version-check` and the validation commands above are your real gate; run them before pushing.
+- `release.yml` is **manual `workflow_dispatch`** with a `version` input. It builds with `USBUDDY_VERSION={input}`, which **overrides** `Cargo.toml` in the binaries — so its `validate` job runs `version-check --expect {input}` first and refuses to release when the input and the committed version disagree. Auto-creates the tag `v{version}`, builds the matrix (windows-x64, macos-universal2 via `lipo`, linux-x64), generates `SHA256SUMS.txt`, CycloneDX SBOM, and SLSA build provenance attestation, then produces a draft release. Maintainer publishes manually.
 - `llama.cpp` binaries and model weights are **not** in the release bundle — the installer fetches them at install time.
 - `footprint.yml` runs a Linux snapshot-diff on runtime-touching PRs.
 

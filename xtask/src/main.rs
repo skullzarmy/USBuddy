@@ -17,6 +17,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use reqwest::blocking::Client;
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -43,6 +44,20 @@ enum Cmd {
         /// Optional HF token, sent as `Authorization: Bearer …` for gated models.
         #[arg(long, env = "HF_TOKEN")]
         hf_token: Option<String>,
+    },
+    /// Check that the workspace version is ahead of the last released tag.
+    ///
+    /// Guards the failure mode where a runtime change ships without a version
+    /// bump. That matters more here than in most projects: the drive layout is
+    /// keyed by version (`versions/{ver}/`, `current.json`), so reusing a
+    /// version makes `install-runtime` overwrite the active tree in place
+    /// instead of staging a new one with rollback.
+    VersionCheck {
+        /// Require this exact version (release.yml passes its `version` input,
+        /// which otherwise overrides Cargo.toml via USBUDDY_VERSION and lets
+        /// the tag and the repo drift apart silently).
+        #[arg(long)]
+        expect: Option<String>,
     },
 }
 
@@ -465,6 +480,86 @@ fn run_catalog_fetch(
     Ok(())
 }
 
+// --------------------------------------------------------------------
+// version-check
+// --------------------------------------------------------------------
+
+/// Reads `[workspace.package] version` from the root Cargo.toml.
+fn workspace_version() -> anyhow::Result<Version> {
+    let raw = std::fs::read_to_string("Cargo.toml")
+        .context("reading ./Cargo.toml — run this from the repository root")?;
+    let doc: toml::Value = toml::from_str(&raw).context("parsing Cargo.toml")?;
+    let text = doc
+        .get("workspace")
+        .and_then(|w| w.get("package"))
+        .and_then(|p| p.get("version"))
+        .and_then(|v| v.as_str())
+        .context("Cargo.toml has no [workspace.package] version")?;
+    Version::parse(text).with_context(|| format!("workspace version {text:?} is not valid semver"))
+}
+
+/// Highest `v*` tag reachable in this clone, or `None` on a repo with no
+/// releases yet. Tags absent (a shallow CI checkout) is reported, not guessed.
+fn latest_release_tag() -> anyhow::Result<Option<Version>> {
+    let out = std::process::Command::new("git")
+        .args(["tag", "--list", "v*"])
+        .output()
+        .context("running `git tag` — is git on PATH?")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "`git tag` failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let mut versions: Vec<Version> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix('v'))
+        // Ignore tags that aren't semver rather than failing the check on them.
+        .filter_map(|v| Version::parse(v).ok())
+        .collect();
+    versions.sort();
+    Ok(versions.pop())
+}
+
+fn run_version_check(expect: Option<&str>) -> anyhow::Result<()> {
+    let workspace = workspace_version()?;
+
+    // Release path: the dispatched version must already be committed. Without
+    // this, USBUDDY_VERSION makes the built binaries report the input while
+    // Cargo.toml keeps the old number, so the tag and a from-source build
+    // disagree and nothing anywhere complains.
+    if let Some(expect) = expect {
+        let expected =
+            Version::parse(expect).with_context(|| format!("{expect:?} is not valid semver"))?;
+        if expected != workspace {
+            anyhow::bail!(
+                "release version {expected} does not match [workspace.package] version \
+                 {workspace}.\nBump Cargo.toml to {expected} and commit it before releasing — \
+                 otherwise the tag says {expected} while `cargo build` from source produces \
+                 {workspace}."
+            );
+        }
+    }
+
+    match latest_release_tag()? {
+        None => {
+            println!("version-check: {workspace} (no v* tags yet — nothing to compare against)");
+        }
+        Some(latest) if workspace > latest => {
+            println!("version-check: {workspace} is ahead of the last release v{latest} — ok");
+        }
+        Some(latest) => {
+            anyhow::bail!(
+                "[workspace.package] version is {workspace}, but v{latest} is already released.\n\
+                 Bump Cargo.toml before shipping runtime changes: the drive layout is keyed by \
+                 version, so reusing {workspace} makes install-runtime overwrite the active \
+                 versions/{workspace}/ tree in place instead of staging a new one with rollback."
+            );
+        }
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
@@ -474,6 +569,7 @@ fn main() -> ExitCode {
             hf_base,
             hf_token,
         } => run_catalog_fetch(seed, out, hf_base, hf_token),
+        Cmd::VersionCheck { expect } => run_version_check(expect.as_deref()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
